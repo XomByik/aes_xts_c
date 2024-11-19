@@ -25,21 +25,11 @@ Tento projekt poskytuje nástroj na šifrovanie a dešifrovanie súborov pomocou
 
 ## Použitie
 
-# Windows
+### Windows
 aes_xts.exe test test_vectors.txt
-
-# Linux
-./aes_xts test test_vectors.txt
-
-# Windows
 aes_xts.exe encrypt <nazov_suboru_1> <nazov_suboru_2> ...
-
-# Linux
-./aes_xts encrypt <nazov_suboru_1> <nazov_suboru_2> ...
-
-# Windows
 aes_xts.exe decrypt <nazov_suboru_1.enc> <nazov_suboru_2.enc> ...
-
-# Linux
+### Linux
+./aes_xts test test_vectors.txt
+./aes_xts encrypt <nazov_suboru_1> <nazov_suboru_2> ...
 ./aes_xts decrypt <nazov_suboru_1.enc> <nazov_suboru_2.enc> ...
-
