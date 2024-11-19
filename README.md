@@ -2,7 +2,7 @@
 
 ## Popis
 
-Tento projekt poskytuje nástroj na šifrovanie a dešifrovanie súborov pomocou algoritmu AES-128-XTS s využitím knižnice OpenSSL. Program umožňuje šifrovať viaceré súbory naraz, automaticky generovať vhodné názvy výstupných súborov a využíva bezpečnú funkciu na odvodenie kľúča zo zadaného hesla pomocou Argon2id.
+Tento projekt poskytuje nástroj na šifrovanie a dešifrovanie súborov pomocou algoritmu AES-128-XTS s využitím knižnice OpenSSL. Program umožňuje šifrovať viaceré súbory naraz, využíva bezpečnú funkciu na odvodenie kľúča zo zadaného hesla Argon2id a tiež ponúka možnosť otestovať testovacie vektory zo štandardu.
 
 ## Funkcie
 
@@ -21,4 +21,25 @@ Tento projekt poskytuje nástroj na šifrovanie a dešifrovanie súborov pomocou
 
 ## Kompilácia
 
-- **Windows/Unix systémy**: gcc.
+- **Windows/Unix systémy**: gcc aes_xts.c -o aes_xts -lssl -lcrypto.
+
+## Použitie
+
+# Windows
+aes_xts.exe test test_vectors.txt
+
+# Linux
+./aes_xts test test_vectors.txt
+
+# Windows
+aes_xts.exe encrypt <nazov_suboru_1> <nazov_suboru_2> ...
+
+# Linux
+./aes_xts encrypt <nazov_suboru_1> <nazov_suboru_2> ...
+
+# Windows
+aes_xts.exe decrypt <nazov_suboru_1.enc> <nazov_suboru_2.enc> ...
+
+# Linux
+./aes_xts decrypt <nazov_suboru_1.enc> <nazov_suboru_2.enc> ...
+
