@@ -17,7 +17,10 @@ Tento projekt poskytuje nástroj na šifrovanie a dešifrovanie súborov pomocou
 ## Požiadavky
 
 - **C Kompilátor**: Pre kompiláciu použitie kompilátor gcc.
-- **OpenSSL**: OpenSSL vo verzii aspoň 3.3.0.
+- **OpenSSL**: OpenSSL vo verzii aspoň 3.2.0. 
+- Na inštaláciu openssl vo Windows je možné využiť chocolatey package manager
+```bash
+Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))```
 
 ## Kompilácia
 

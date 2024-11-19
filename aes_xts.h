@@ -1,3 +1,5 @@
+//aes_xts.h
+
 #ifndef AES_XTS_H
 #define AES_XTS_H
 
@@ -8,6 +10,7 @@
 #include <openssl/params.h>
 #include <openssl/kdf.h>
 #include <openssl/thread.h>
+#include <openssl/err.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -16,6 +19,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <conio.h>
+#include <locale.h>
 #else
 #include <termios.h>
 #include <unistd.h>
@@ -66,6 +70,7 @@ void get_password(char *password, size_t len);
 
 // Utility funkcie pre manipuláciu s názvami súborov
 char* append_extension(const char *filename, const char *extension);
+
 char* generate_decrypted_filename(const char *filename);
 
 #endif // AES_XTS_H

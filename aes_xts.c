@@ -1,23 +1,142 @@
+//aes_xts.c
+
 #include "aes_xts.h"
 
-// Funkcia na výpis chýb a ukončenie programu
-void handle_errors() {
-    ERR_print_errors_fp(stderr);
-    abort();
+#define CHECK_OPENSSL_CALL(call, error_action) \
+    if (!(call)) { \
+        fprintf(stderr, "Chyba: %s, riadok %d\n", __FILE__, __LINE__); \
+        handle_errors(); \
+        error_action; \
+    }
+
+// Handle_errors
+void handle_errors(void) {
+    ERR_print_errors_fp(stderr); // Vypíše detaily o chybe na stderr
+    exit(EXIT_FAILURE);          // Ukončí program s chybovým kódom
 }
 
-// Konverzia hexadecimálneho reťazca na pole bajtov
-int hex_to_bytes(const char *hex_str, unsigned char *bytes, int expected_len) {
-    int len = strlen(hex_str);
-    if (len != expected_len * 2) {
-        return -1; // Nesprávna dĺžka hex reťazca
-    }
-    for (int i = 0; i < expected_len; i++) {
-        if (sscanf(&hex_str[i * 2], "%2hhx", &bytes[i]) != 1) {
-            return -1; // Chyba pri konverzii
+// Funkcia na zobrazenie nápovedy pre používateľa
+void print_help() {
+    printf("Použitie: program [operácia] [súbory...]\n");
+    printf("Operácie:\n");
+    printf("  encrypt [súbory...]  - Šifrovanie zadaných súborov\n");
+    printf("  decrypt [súbory...]  - Dešifrovanie zadaných súborov\n");
+    printf("  test [súbor]         - Testovanie šifrovania s testovacími vektormi\n");
+}
+
+// Šifrovanie alebo dešifrovanie pomocou AES-XTS
+int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len, unsigned char *out, int *out_len, unsigned char *tweak) {
+    int len;
+    *out_len = 0;
+    CHECK_OPENSSL_CALL(EVP_CipherInit_ex(ctx, NULL, NULL, NULL, tweak, -1), return -1);
+    CHECK_OPENSSL_CALL(EVP_CipherUpdate(ctx, out, &len, in, in_len), return -1);
+    *out_len += len;
+    CHECK_OPENSSL_CALL(EVP_CipherFinal_ex(ctx, out + *out_len, &len), return -1);
+    *out_len += len;
+    return 0;
+}
+
+// Pomocná funkcia na pridanie údajov do poľa
+unsigned char* append_data(unsigned char *current_data, int *current_len, const char *hex_str, int hex_len) {
+    unsigned char *new_data = realloc(current_data, *current_len + hex_len);
+    hex_to_bytes(hex_str, new_data + *current_len, hex_len);
+    *current_len += hex_len;
+    return new_data;
+}
+
+// Načítanie testovacích vektorov zo súboru
+int load_test_vectors(const char *filename, TestVector **vectors, int *count) {
+    FILE *file = fopen(filename, "r");
+    TestVector *temp_vectors = NULL;
+    int temp_count = 0;
+    TestVector current_vector = {0};
+    char line[MAX_LINE_LENGTH];
+    while (fgets(line, sizeof(line), file)) {
+        line[strcspn(line, "\r\n")] = 0; // Odstránenie nového riadku
+        if (strlen(line) == 0) {
+            // Ak je riadok prázdny, uložiť aktuálny vektor
+            if (current_vector.plaintext_len > 0 && current_vector.ciphertext_len > 0) {
+                temp_vectors = realloc(temp_vectors, sizeof(TestVector) * (temp_count + 1));
+                if (!temp_vectors) {
+                    perror("Chyba pri alokácii pamäte");
+                    fclose(file);
+                    return -1;
+                }
+                temp_vectors[temp_count++] = current_vector;
+                memset(&current_vector, 0, sizeof(TestVector));
+            }
+            continue;
+        }
+        char *key = strtok(line, " ");
+        char *value = strtok(NULL, " ");
+        if (!key || !value) {
+            fprintf(stderr, "Neplatný formát riadku: %s\n", line);
+            fclose(file);
+            return -1;
+        }
+        // Rozhodovanie podľa typu kľúča
+        if (strcmp(key, "Key1") == 0) {
+            hex_to_bytes(value, current_vector.key1, 16);
+        } else if (strcmp(key, "Key2") == 0) {
+            hex_to_bytes(value, current_vector.key2, 16);
+        } else if (strcmp(key, "DUCN") == 0) {
+            hex_to_bytes(value, current_vector.ducn, 16);
+        } else if (strcmp(key, "PTX") == 0) {
+            int len = strlen(value) / 2;
+            current_vector.plaintext = append_data(current_vector.plaintext, &current_vector.plaintext_len, value, len);
+            if (!current_vector.plaintext) {
+                fclose(file);
+                return -1;
+            }
+        } else if (strcmp(key, "CTX") == 0) {
+            int len = strlen(value) / 2;
+            current_vector.ciphertext = append_data(current_vector.ciphertext, &current_vector.ciphertext_len, value, len);
+            if (!current_vector.ciphertext) {
+                fclose(file);
+                return -1;
+            }
+        } else {
+            fprintf(stderr, "Neznámy parameter: %s\n", key);
+            fclose(file);
+            return -1;
         }
     }
-    return expected_len;
+    // Uloženie posledného vektora
+    if (current_vector.plaintext_len > 0 && current_vector.ciphertext_len > 0) {
+        temp_vectors = realloc(temp_vectors, sizeof(TestVector) * (temp_count + 1));
+        temp_vectors[temp_count++] = current_vector;
+    }
+    fclose(file);
+    *vectors = temp_vectors;
+    *count = temp_count;
+    return 0;
+}
+
+// Testovanie načítaných vektorov
+void test_vectors(TestVector *vectors, int vector_count) {
+    for (int i = 0; i < vector_count; i++) {
+        EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+        if (!ctx) {
+            handle_errors();
+        }
+
+        if (EVP_EncryptInit_ex(ctx, EVP_aes_128_xts(), NULL, vectors[i].key1, vectors[i].key2) != 1) {
+            handle_errors();
+        }
+
+        unsigned char enc_out[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH];
+        int enc_out_len = 0;
+
+        aes_xts_crypt(ctx, vectors[i].plaintext, vectors[i].plaintext_len, enc_out, &enc_out_len, vectors[i].ducn);
+
+        if (enc_out_len != vectors[i].ciphertext_len || memcmp(enc_out, vectors[i].ciphertext, enc_out_len) != 0) {
+            fprintf(stderr, "Nesúlad v šifrovaní pri vektore %d\n", i + 1);
+        } else {
+            printf("Šifrovanie úspešné pre vektor %d\n", i + 1);
+        }
+
+        EVP_CIPHER_CTX_free(ctx);
+    }
 }
 
 // Odvodenie kľúča z hesla pomocou Argon2id
@@ -34,9 +153,7 @@ int derive_key_from_password(const char *password, const unsigned char *salt, un
     uint32_t threads = 2;
 
     // Nastavenie maximálneho počtu vlákien pre KDF
-    if (OSSL_set_max_threads(NULL, threads) != 1) {
-        return -1; // Chyba pri nastavovaní vlákien
-    }
+    OSSL_set_max_threads(NULL, threads);
 
     // Konfigurácia parametrov pre KDF
     OSSL_PARAM *p = params;
@@ -51,38 +168,42 @@ int derive_key_from_password(const char *password, const unsigned char *salt, un
 
     // Inicializácia KDF pre Argon2id
     kdf = EVP_KDF_fetch(NULL, "Argon2id", NULL);
-    if (kdf == NULL) {
-        return -1; // Chyba pri získavaní KDF
-    }
 
     kctx = EVP_KDF_CTX_new(kdf);
-    if (kctx == NULL) {
-        EVP_KDF_free(kdf);
-        return -1; // Chyba pri vytváraní KDF kontextu
-    }
 
     // Derivácia kľúča
-    if (EVP_KDF_derive(kctx, key, out_len, params) != 1) {
-        EVP_KDF_CTX_free(kctx);
-        EVP_KDF_free(kdf);
-        return -1; // Chyba pri derivácii kľúča
-    }
+    EVP_KDF_derive(kctx, key, out_len, params);
 
-    // Uvoľnenie zdrojov
+    // Uvoľnenie pamäte
     EVP_KDF_CTX_free(kctx);
     EVP_KDF_free(kdf);
-    OSSL_set_max_threads(NULL, 0); // Resetovanie vlákien
+    OSSL_set_max_threads(NULL, 0);
 
     return 0; // Úspešné odvodenie kľúča
+}
+
+// Konverzia hexadecimálneho reťazca na pole bajtov
+int hex_to_bytes(const char *hex_str, unsigned char *bytes, int expected_len) {
+    int len = strlen(hex_str);
+    if (len != expected_len * 2) {
+        return -1; // Nesprávna dĺžka hex reťazca
+    }
+    for (int i = 0; i < expected_len; i++) {
+        if (sscanf(&hex_str[i * 2], "%2hhx", &bytes[i]) != 1) {
+            return -1; // Chyba pri konverzii
+        }
+    }
+    return expected_len;
 }
 
 // Zabezpečené získanie hesla od používateľa
 void get_password(char *password, size_t len) {
     printf("Zadajte heslo: ");
 
+// Windows/Linux zadávanie hesla
 #ifdef _WIN32
+    SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
-
     int i = 0;
     char ch;
     while ((ch = _getch()) != '\r' && i < len - 1) {
@@ -114,30 +235,19 @@ void get_password(char *password, size_t len) {
 char* append_extension(const char *filename, const char *extension) {
     size_t len = strlen(filename) + strlen(extension) + 1;
     char *new_name = malloc(len);
-    if (!new_name) {
-        exit(1); // Kritická chyba pri alokácii pamäte
-    }
     snprintf(new_name, len, "%s%s", filename, extension);
     return new_name;
 }
 
-// Generovanie názvu dešifrovaného súboru s príponou _dec pred pôvodnou príponou
+// Generovanie názvu dešifrovaného súboru s _dec
 char* generate_decrypted_filename(const char *filename) {
     const char *enc_ext = ".enc";
     size_t filename_len = strlen(filename);
     size_t enc_ext_len = strlen(enc_ext);
 
-    // Kontrola, či názov súboru končí na .enc
-    if (filename_len < enc_ext_len || strcmp(filename + filename_len - enc_ext_len, enc_ext) != 0) {
-        exit(1); // Nesprávna prípona súboru
-    }
-
     // Odstránenie .enc
     size_t base_len = filename_len - enc_ext_len;
     char *base_name = malloc(base_len + 1);
-    if (!base_name) {
-        exit(1); // Kritická chyba pri alokácii pamäte
-    }
     strncpy(base_name, filename, base_len);
     base_name[base_len] = '\0';
 
@@ -147,10 +257,7 @@ char* generate_decrypted_filename(const char *filename) {
         size_t name_before_dot_len = dot - base_name;
         size_t new_name_len = name_before_dot_len + strlen("_dec") + strlen(dot) + 1;
         char *new_name = malloc(new_name_len);
-        if (!new_name) {
-            free(base_name);
-            exit(1); // Kritická chyba pri alokácii pamäte
-        }
+
         strncpy(new_name, base_name, name_before_dot_len);
         new_name[name_before_dot_len] = '\0';
         strcat(new_name, "_dec");
@@ -158,220 +265,149 @@ char* generate_decrypted_filename(const char *filename) {
         free(base_name);
         return new_name;
     } else {
-        // Ak súbor nemá pôvodnú príponu, jednoducho pridať _dec
+        // Ak súbor nemá pôvodnú príponu, pridať _dec
         size_t new_name_len = base_len + strlen("_dec") + 1;
         char *new_name = malloc(new_name_len);
-        if (!new_name) {
-            free(base_name);
-            exit(1); // Kritická chyba pri alokácii pamäte
-        }
         snprintf(new_name, new_name_len, "%s_dec", base_name);
         free(base_name);
         return new_name;
     }
 }
 
-// Šifrovanie alebo dešifrovanie pomocou AES-XTS
-int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len, unsigned char *out, int *out_len, unsigned char *tweak) {
-    int len;
-    *out_len = 0;
+// Funkcia na spracovanie šifrovania alebo dešifrovania súboru
+void process_file(const char *operation, const char *input_filename, const char *password) {
+    unsigned char salt[SALT_LENGTH]; // Buffer pre salt
+    unsigned char key[AES_KEY_LENGTH]; // Buffer pre odvodený kľúč
+    unsigned char *key1 = key; // Prvá polovica kľúča pre AES-XTS
+    unsigned char *key2 = key + 16; // Druhá polovica kľúča pre AES-XTS
+    unsigned char in_buf[BUFFER_SIZE]; // Vstupný buffer pre čítanie dát zo súboru
+    unsigned char out_buf[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH]; // Výstupný buffer pre zápis dát do súboru
+    int in_len, out_len; // Dĺžky vstupných a výstupných dát
+    char *output_filename = NULL;
 
-    // Nastavenie tweak hodnoty (iniciálne IV)
-    if (EVP_CipherInit_ex(ctx, NULL, NULL, NULL, tweak, -1) != 1) {
-        handle_errors(); // Kritická chyba pri nastavovaní tweak
+    // Určenie názvu výstupného súboru na základe operácie
+    if (strcmp(operation, "encrypt") == 0) {
+        output_filename = append_extension(input_filename, ".enc");
+    } else { // decrypt
+        output_filename = generate_decrypted_filename(input_filename);
     }
 
-    // Spracovanie dát
-    if (EVP_CipherUpdate(ctx, out, &len, in, in_len) != 1) {
-        return -1; // Chyba pri spracovaní dát
+    // Otvorenie vstupného a výstupného súboru
+    FILE *infile = fopen(input_filename, "rb");
+    if (!infile) {
+        free(output_filename);
+        printf("Chyba pri otváraní vstupného súboru: %s\n", input_filename);
+        return;
     }
-    *out_len += len;
-
-    if (EVP_CipherFinal_ex(ctx, out + *out_len, &len) != 1) {
-        return -1; // Chyba pri finalizácii
-    }
-    *out_len += len;
-
-    return 0; // Úspešné spracovanie
-}
-
-// Formátovanie výstupu do hexadecimálneho formátu
-void print_hex_output(const char *label, const unsigned char *data, int len) {
-    printf("%s: ", label);
-    for (int i = 0; i < len; i++) {
-        printf("%02x", data[i]);
-    }
-    printf("\n");
-}
-
-// Načítanie testovacích vektorov zo súboru
-int load_test_vectors(const char *filename, TestVector **vectors, int *count) {
-    FILE *file = fopen(filename, "r");
-    if (!file) {
-        return -1; // Chyba pri otváraní súboru
+    FILE *outfile = fopen(output_filename, "wb");
+    if (!outfile) {
+        fclose(infile);
+        free(output_filename);
+        printf("Chyba pri otváraní výstupného súboru: %s\n", output_filename);
+        return;
     }
 
-    char line[MAX_LINE_LENGTH];
-    TestVector *temp_vectors = NULL;
-    int temp_count = 0;
-    TestVector current_vector;
-    memset(&current_vector, 0, sizeof(TestVector));
-
-    // Čítanie každého riadku a ukladanie údajov do aktuálneho testovacieho vektora
-    while (fgets(line, sizeof(line), file)) {
-        line[strcspn(line, "\r\n")] = 0; // Odstránenie nových riadkov
-        if (strlen(line) == 0) { 
-            // Prázdny riadok označuje koniec aktuálneho testovacieho vektora
-            if (current_vector.plaintext_len > 0 && current_vector.ciphertext_len > 0) {
-                temp_vectors = realloc(temp_vectors, sizeof(TestVector) * (temp_count + 1));
-                if (!temp_vectors) {
-                    fclose(file);
-                    return -1; // Chyba pri alokácii pamäte
-                }
-                temp_vectors[temp_count++] = current_vector;
-                memset(&current_vector, 0, sizeof(TestVector));
-                current_vector.plaintext = NULL;
-                current_vector.ciphertext = NULL;
-            }
-            continue;
+    if (strcmp(operation, "encrypt") == 0) {
+        // Generovanie a zápis salt pre šifrovanie
+        if (!RAND_bytes(salt, SALT_LENGTH)) {
+            fclose(infile);
+            fclose(outfile);
+            free(output_filename);
+            printf("Chyba pri generovaní salt.\n");
+            return;
         }
-
-        // Rozdelenie riadku na kľúč a hodnotu
-        char *key = strtok(line, " ");
-        char *value = strtok(NULL, " ");
-        if (!key || !value) {
-            fclose(file);
-            return -1; // Neplatný formát riadku
+        if (fwrite(salt, 1, SALT_LENGTH, outfile) != SALT_LENGTH) {
+            fclose(infile);
+            fclose(outfile);
+            free(output_filename);
+            printf("Chyba pri zápise salt do súboru.\n");
+            return;
         }
-
-        // Priradenie hodnôt na základe kľúča
-        if (strcmp(key, "Key1") == 0) {
-            if (hex_to_bytes(value, current_vector.key1, 16) != 16) {
-                fclose(file);
-                return -1; // Chyba pri konverzii Key1
-            }
-        } else if (strcmp(key, "Key2") == 0) {
-            if (hex_to_bytes(value, current_vector.key2, 16) != 16) {
-                fclose(file);
-                return -1; // Chyba pri konverzii Key2
-            }
-        } else if (strcmp(key, "DUCN") == 0) {
-            if (hex_to_bytes(value, current_vector.ducn, 16) != 16) {
-                fclose(file);
-                return -1; // Chyba pri konverzii DUCN
-            }
-        } else if (strcmp(key, "PTX") == 0) {
-            int len = strlen(value) / 2;
-            unsigned char *new_plaintext = realloc(current_vector.plaintext, current_vector.plaintext_len + len);
-            if (!new_plaintext) {
-                fclose(file);
-                return -1; // Chyba pri alokácii pamäte pre PTX
-            }
-            current_vector.plaintext = new_plaintext;
-            if (hex_to_bytes(value, current_vector.plaintext + current_vector.plaintext_len, len) != len) {
-                fclose(file);
-                return -1; // Chyba pri konverzii PTX
-            }
-            current_vector.plaintext_len += len;
-        } else if (strcmp(key, "CTX") == 0) {
-            int len = strlen(value) / 2;
-            unsigned char *new_ciphertext = realloc(current_vector.ciphertext, current_vector.ciphertext_len + len);
-            if (!new_ciphertext) {
-                fclose(file);
-                return -1; // Chyba pri alokácii pamäte pre CTX
-            }
-            current_vector.ciphertext = new_ciphertext;
-            if (hex_to_bytes(value, current_vector.ciphertext + current_vector.ciphertext_len, len) != len) {
-                fclose(file);
-                return -1; // Chyba pri konverzii CTX
-            }
-            current_vector.ciphertext_len += len;
-        } else {
-            fclose(file);
-            return -1; // Neznámy parameter
+    } else { // decrypt
+        // Čítanie salt zo vstupného súboru pre dešifrovanie
+        if (fread(salt, 1, SALT_LENGTH, infile) != SALT_LENGTH) {
+            fclose(infile);
+            fclose(outfile);
+            free(output_filename);
+            printf("Chyba pri čítaní salt zo súboru.\n");
+            return;
         }
     }
 
-    // Uloženie posledného testovacieho vektora, ak existuje
-    if (current_vector.plaintext_len > 0 && current_vector.ciphertext_len > 0) {
-        temp_vectors = realloc(temp_vectors, sizeof(TestVector) * (temp_count + 1));
-        if (!temp_vectors) {
-            fclose(file);
-            return -1; // Chyba pri alokácii pamäte pre posledný testovací vektor
-        }
-        temp_vectors[temp_count++] = current_vector;
+    // Odvodenie kľúča z hesla a salt
+    if (derive_key_from_password(password, salt, key) != 0) {
+        fclose(infile);
+        fclose(outfile);
+        free(output_filename);
+        printf("Chyba pri odvodení kľúča z hesla.\n");
+        return;
     }
 
-    fclose(file);
-    *vectors = temp_vectors;
-    *count = temp_count;
-    return 0; // Úspešné načítanie testovacích vektorov
-}
+    // Inicializácia šifrovania
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
 
-// Testovanie načítaných testovacích vektorov
-void test_vectors(TestVector *vectors, int vector_count) {
-    for (int i = 0; i < vector_count; i++) {
-        printf("Testovací vektor %d:\n", i + 1);
-
-        unsigned char *key1 = vectors[i].key1;
-        unsigned char *key2 = vectors[i].key2;
-        unsigned char *tweak = vectors[i].ducn;
-
-        EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-        if (!ctx) {
-            handle_errors(); // Kritická chyba pri vytváraní cipher kontextu
-        }
-
-        // Inicializácia šifrovacieho kontextu pre AES-128-XTS
+    if (strcmp(operation, "encrypt") == 0) {
         if (EVP_EncryptInit_ex(ctx, EVP_aes_128_xts(), NULL, key1, key2) != 1) {
-            handle_errors(); // Kritická chyba pri inicializácii cipher
+            handle_errors(); // Chyba pri inicializácii ciphertext
         }
-
-        unsigned char enc_out[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH];
-        int enc_out_len = 0;
-
-        // Šifrovanie plaintextu
-        if (aes_xts_crypt(ctx, vectors[i].plaintext, vectors[i].plaintext_len, enc_out, &enc_out_len, tweak) != 0) {
-            EVP_CIPHER_CTX_free(ctx);
-            continue; // Chyba pri šifrovaní, pokračovanie na ďalší vektor
+    } else { // decrypt
+        if (EVP_DecryptInit_ex(ctx, EVP_aes_128_xts(), NULL, key1, key2) != 1) {
+            handle_errors(); // Chyba pri inicializácii ciphertext
         }
-
-        // Výpis všetkých relevantných dát
-        print_hex_output("Key1", key1, 16);
-        print_hex_output("Key2", key2, 16);
-        print_hex_output("DUCN (tweak)", tweak, 16);
-        print_hex_output("PTX (Plaintext)", vectors[i].plaintext, vectors[i].plaintext_len);
-        print_hex_output("CTX (očakávaný Ciphertext)", vectors[i].ciphertext, vectors[i].ciphertext_len);
-        print_hex_output("Vygenerovaný CTX (Ciphertext)", enc_out, enc_out_len);
-
-        // Porovnanie vygenerovaného ciphertextu s očakávaným ciphertextom
-        if (enc_out_len != vectors[i].ciphertext_len || memcmp(enc_out, vectors[i].ciphertext, enc_out_len) != 0) {
-            printf("Nesúlad v šifrovaní pri testovacom vektore %d\n", i + 1);
-        } else {
-            printf("Šifrovanie úspešné pre testovací vektor %d\n", i + 1);
-        }
-
-        EVP_CIPHER_CTX_free(ctx);
-        printf("\n");
     }
+
+    // Spracovanie súboru po častiach
+    while ((in_len = fread(in_buf, 1, BUFFER_SIZE, infile)) > 0) {
+        if (aes_xts_crypt(ctx, in_buf, in_len, out_buf, &out_len, salt) != 0) {
+            printf("Chyba pri spracovaní dát.\n");
+            break; // Chyba pri spracovaní dát, ukončenie spracovania súboru
+        }
+        if (fwrite(out_buf, 1, out_len, outfile) != (size_t)out_len) {
+            printf("Chyba pri zápise dát do súboru.\n");
+            break; // Chyba pri zápise dát do výstupného súboru, ukončenie spracovania súboru
+        }
+    }
+
+    // Zápis dát šifrovania/dešifrovania
+    if (strcmp(operation, "encrypt") == 0) {
+        if (EVP_EncryptFinal_ex(ctx, out_buf, &out_len) == 1) {
+            fwrite(out_buf, 1, out_len, outfile); // Zápis zašifrovaných dát do súboru
+        }
+    } else {
+        if (EVP_DecryptFinal_ex(ctx, out_buf, &out_len) == 1) {
+            fwrite(out_buf, 1, out_len, outfile); // Zápis rozšifrovaných dát do súboru
+        }
+    }
+
+    // Uvoľnenie pamäte a zatvorenie súborov
+    EVP_CIPHER_CTX_free(ctx);
+    fclose(infile);
+    fclose(outfile);
+    free(output_filename);
+
+    printf("Operácia '%s' bola úspešne dokončená pre súbor: %s\n", operation, input_filename);
 }
 
 int main(int argc, char *argv[]) {
+
+    int file_start = 2; // Index prvého súboru v argumentoch
+    char password[256]; // Buffer pre uloženie hesla od používateľa
+
+    // Načítanie argumentov od používateľa
     if (argc < 3 || 
         (strcmp(argv[1], "encrypt") != 0 && 
          strcmp(argv[1], "decrypt") != 0 && 
          strcmp(argv[1], "test") != 0)) {
-        return 1; // Nesprávne použitie programu
+        print_help();
+        return 1;
     }
 
     const char *operation = argv[1];
 
-    // Inicializácia OpenSSL
-    OPENSSL_init();
-
     if (strcmp(operation, "test") == 0) {
         if (argc != 3) {
-            return 1; // Nesprávne použitie pre testovanie
+            print_help();
+            return 1;
         }
 
         const char *test_file = argv[2];
@@ -379,6 +415,7 @@ int main(int argc, char *argv[]) {
         int vector_count = 0;
 
         if (load_test_vectors(test_file, &vectors, &vector_count) != 0) {
+            printf("Chyba pri načítaní testovacích vektorov zo súboru: %s\n", test_file);
             return 1; // Chyba pri načítaní testovacích vektorov
         }
 
@@ -394,129 +431,18 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    // Pre operácie šifrovania a dešifrovania
-    int file_start = 2;
-    int file_count = argc - 2;
-
-    // Získanie hesla od používateľa
-    char password[256];
+    // Načítanie hesla od používateľa
     get_password(password, sizeof(password));
 
+    // Šifrovanie každého súboru
     for (int i = file_start; i < argc; i++) {
         const char *input_filename = argv[i];
-        char *output_filename = NULL;
-
-        // Určenie názvu výstupného súboru na základe operácie
-        if (strcmp(operation, "encrypt") == 0) {
-            output_filename = append_extension(input_filename, ".enc");
-        } else { // decrypt
-            output_filename = generate_decrypted_filename(input_filename);
-        }
-
-        // Otvorenie vstupného a výstupného súboru
-        FILE *infile = fopen(input_filename, "rb");
-        if (!infile) {
-            free(output_filename);
-            continue; // Chyba pri otváraní vstupného súboru, pokračovanie na ďalší
-        }
-        FILE *outfile = fopen(output_filename, "wb");
-        if (!outfile) {
-            fclose(infile);
-            free(output_filename);
-            continue; // Chyba pri otváraní výstupného súboru, pokračovanie na ďalší
-        }
-
-        unsigned char salt[SALT_LENGTH];
-        unsigned char key[AES_KEY_LENGTH];
-
-        if (strcmp(operation, "encrypt") == 0) {
-            // Generovanie a zápis salt pre šifrovanie
-            if (!RAND_bytes(salt, SALT_LENGTH)) {
-                fclose(infile);
-                fclose(outfile);
-                free(output_filename);
-                continue; // Chyba pri generovaní salt, pokračovanie na ďalší
-            }
-            if (fwrite(salt, 1, SALT_LENGTH, outfile) != SALT_LENGTH) {
-                fclose(infile);
-                fclose(outfile);
-                free(output_filename);
-                continue; // Chyba pri zápise salt, pokračovanie na ďalší
-            }
-        } else { // decrypt
-            // Čítanie salt zo vstupného súboru pre dešifrovanie
-            if (fread(salt, 1, SALT_LENGTH, infile) != SALT_LENGTH) {
-                fclose(infile);
-                fclose(outfile);
-                free(output_filename);
-                continue; // Chyba pri čítaní salt, pokračovanie na ďalší
-            }
-        }
-
-        // Odvodenie kľúča z hesla a salt
-        if (derive_key_from_password(password, salt, key) != 0) {
-            fclose(infile);
-            fclose(outfile);
-            free(output_filename);
-            continue; // Chyba pri odvodení kľúča, pokračovanie na ďalší
-        }
-
-        unsigned char *key1 = key;
-        unsigned char *key2 = key + 16;
-
-        // Inicializácia šifrovacieho kontextu
-        EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-        if (!ctx) {
-            handle_errors(); // Kritická chyba pri vytváraní cipher kontextu
-        }
-
-        if (strcmp(operation, "encrypt") == 0) {
-            if (EVP_EncryptInit_ex(ctx, EVP_aes_128_xts(), NULL, key1, key2) != 1) {
-                handle_errors(); // Kritická chyba pri inicializácii cipher
-            }
-        } else { // decrypt
-            if (EVP_DecryptInit_ex(ctx, EVP_aes_128_xts(), NULL, key1, key2) != 1) {
-                handle_errors(); // Kritická chyba pri inicializácii cipher
-            }
-        }
-
-        unsigned char in_buf[BUFFER_SIZE];
-        unsigned char out_buf[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH];
-        int in_len, out_len;
-
-        // Spracovanie súboru po častiach
-        while ((in_len = fread(in_buf, 1, BUFFER_SIZE, infile)) > 0) {
-            if (aes_xts_crypt(ctx, in_buf, in_len, out_buf, &out_len, salt) != 0) {
-                break; // Chyba pri spracovaní dát, ukončenie spracovania súboru
-            }
-            if (fwrite(out_buf, 1, out_len, outfile) != (size_t)out_len) {
-                break; // Chyba pri zápise dát do výstupného súboru, ukončenie spracovania súboru
-            }
-        }
-
-        // Finalizácia šifrovania/dešifrovania
-        if (strcmp(operation, "encrypt") == 0) {
-            if (EVP_EncryptFinal_ex(ctx, out_buf, &out_len) == 1) {
-                fwrite(out_buf, 1, out_len, outfile); // Zápis finalizovaných dát
-            }
-        } else { // decrypt
-            if (EVP_DecryptFinal_ex(ctx, out_buf, &out_len) == 1) {
-                fwrite(out_buf, 1, out_len, outfile); // Zápis finalizovaných dát
-            }
-        }
-
-        // Uvoľnenie zdrojov
-        EVP_CIPHER_CTX_free(ctx);
-        fclose(infile);
-        fclose(outfile);
-        free(output_filename);
-
-        printf("Operácia '%s' bola úspešne dokončená pre súbor: %s\n", operation, argv[i]);
+        process_file(operation, input_filename, password);
     }
 
-    // Čistenie OpenSSL zdrojov
+    // Uvoľnenie OpenSSL pamäte
     EVP_cleanup();
     ERR_free_strings();
 
     return 0;
-}
+} 
