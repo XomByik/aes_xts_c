@@ -19,20 +19,47 @@ Tento projekt poskytuje nástroj na šifrovanie a dešifrovanie súborov pomocou
 - **C Kompilátor**: Pre kompiláciu použitie kompilátor gcc.
 - **OpenSSL**: OpenSSL vo verzii aspoň 3.2.0. 
 - Na inštaláciu openssl vo Windows je možné využiť chocolatey package manager
-```bash
-Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))```
+```
+Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1')) 
+```
 
 ## Kompilácia
 
-- **Windows/Unix systémy**: gcc aes_xts.c -o aes_xts -lssl -lcrypto.
+- **Windows**: 
+```
+gcc aes_xts.c -o aes_xts.exe -lssl -lcrypto.
+```
+
+- **Unix**:
+```
+gcc aes_xts.c -o aes_xts -lssl -lcrypto.
+``` 
 
 ## Použitie
 
 ### Windows
-- **Otestovanie testovacích vektorov**: aes_xts.exe test test_vectors.txt
-- **Šifrovanie**: aes_xts.exe encrypt <nazov_suboru_1> <nazov_suboru_2> ...
-- **Dešifrovanie**: aes_xts.exe decrypt <nazov_suboru_1.enc> <nazov_suboru_2.enc> ...
+- **Otestovanie testovacích vektorov**:
+``` 
+aes_xts.exe test test_vectors.txt
+```
+- **Šifrovanie**:
+``` 
+aes_xts.exe encrypt <nazov_suboru_1> <nazov_suboru_2> ...
+```
+- **Dešifrovanie**: 
+```
+aes_xts.exe decrypt <nazov_suboru_1.enc> <nazov_suboru_2.enc> ...
+```
 ### Linux
-- **Otestovanie testovacích vektorov**: ./aes_xts test test_vectors.txt
-- **Šifrovanie**: ./aes_xts encrypt <nazov_suboru_1> <nazov_suboru_2> ...
-- **Dešifrovanie**: ./aes_xts decrypt <nazov_suboru_1.enc> <nazov_suboru_2.enc> ...
+- **Otestovanie testovacích vektorov**:
+``` 
+./aes_xts test test_vectors.txt
+```
+- **Šifrovanie**: 
+```
+./aes_xts encrypt <nazov_suboru_1> <nazov_suboru_2> ...
+```
+- **Dešifrovanie**: 
+```
+./aes_xts decrypt <nazov_suboru_1.enc> <nazov_suboru_2.enc> ...
+```
