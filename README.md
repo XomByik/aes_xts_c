@@ -2,11 +2,12 @@
 
 ## Obsah
 1. [Základný prehľad](#základný-prehľad)
-2. [Ako to funguje](#ako-to-funguje)
-3. [Inštalácia](#inštalácia)
+2. [Inštalácia](#inštalácia)
+3. [Ako to funguje](#ako-to-funguje)
 4. [Používanie programu](#používanie-programu)
 5. [Technická dokumentácia](#technická-dokumentácia)
 6. [Bezpečnostné informácie](#bezpečnostné-informácie)
+7. [Odkazy na dokumentáciu](#odkazy-na-dokumentáciu)
 
 ## Základný prehľad
 
