@@ -155,7 +155,7 @@ make
 
 ### Implementované funkcie
 
-#### 1. process_file
+#### process_file
 ```c
 void process_file(const char *operation, const char *input_filename, const char *password)
 ```
@@ -180,7 +180,7 @@ void process_file(const char *operation, const char *input_filename, const char 
      - Zapíše výsledok
   8. Vyčistí a uvoľní použité prostriedky
 
-#### 2. derive_key_from_password
+#### derive_key_from_password
 ```c
 int derive_key_from_password(const char *password, const unsigned char *salt, unsigned char *key, size_t key_length)
 ```
@@ -202,7 +202,7 @@ int derive_key_from_password(const char *password, const unsigned char *salt, un
   6. Vyčistí pamäť pre Argon2
   7. Vráti výsledok operácie (0 = úspech)
 
-#### 3. aes_xts_crypt
+#### aes_xts_crypt
 ```c
 int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len, unsigned char *out, int *out_len, unsigned char *tweak)
 ```
@@ -224,7 +224,7 @@ int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len, unsigned c
   4. Aktualizuje dĺžku výstupných dát
   5. Vráti stav operácie (1 = úspech)
 
-#### 4. calculate_sector_tweak
+#### calculate_sector_tweak
 ```c
 void calculate_sector_tweak(const unsigned char *initial_tweak, uint64_t sector_number, unsigned char *output_tweak)
 ```
@@ -240,7 +240,7 @@ void calculate_sector_tweak(const unsigned char *initial_tweak, uint64_t sector_
      - Pripočíta číslo sektora k hodnote
   3. Zabezpečí little-endian reprezentáciu
 
-#### 5. hex_to_bytes
+#### hex_to_bytes
 ```c
 int hex_to_bytes(const char *hex_str, unsigned char *bytes, size_t bytes_len)
 ```
@@ -259,7 +259,7 @@ int hex_to_bytes(const char *hex_str, unsigned char *bytes, size_t bytes_len)
   3. Ukladá výsledné bajty do buffera
   4. Vracia počet spracovaných bajtov
 
-#### 6. print_hex_output
+#### print_hex_output
 ```c
 void print_hex_output(const unsigned char *data, size_t len)
 ```
@@ -274,7 +274,7 @@ void print_hex_output(const unsigned char *data, size_t len)
   2. Po 16 bajtoch pridá nový riadok
   3. Vypisuje formátovaný výstup na konzolu
 
-#### 7. get_password
+#### get_password
 ```c
 char *get_password()
 ```
@@ -287,7 +287,7 @@ char *get_password()
   5. Zapne echo terminálu
   6. Vráti načítané heslo
 
-#### 8. append_extension / generate_decrypted_filename
+#### append_extension / generate_decrypted_filename
 ```c
 char *append_extension(const char *filename, const char *ext)
 char *generate_decrypted_filename(const char *encrypted_filename)
@@ -303,7 +303,7 @@ char *generate_decrypted_filename(const char *encrypted_filename)
      - Vloží _dec pred pôvodnú príponu
      - Vráti nový názov súboru
 
-#### 9. load_test_vectors / test_vectors
+#### load_test_vectors / test_vectors
 ```c
 void load_test_vectors(const char *filename)
 int test_vectors(const char *test_file)
