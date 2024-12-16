@@ -21,8 +21,6 @@ Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov. Je vho
 - Podporuje súbory akejkoľvek veľkosti
 - Funguje na Windows aj Linux systémoch
 
-## Ako to funguje
-
 ### Použité technológie
 
 1. **AES-XTS šifrovanie**
@@ -90,6 +88,7 @@ make
 ```bash
 ./aes_xts test test_vectors.txt
 ```
+## Ako to funguje
 
 ### Proces šifrovania
 1. Zadanie vstupných parametrov:
