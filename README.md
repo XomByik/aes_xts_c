@@ -182,8 +182,7 @@ void process_file(const char *operation, const char *input_filename, const char 
 
 #### 2. derive_key_from_password
 ```c
-int derive_key_from_password(const char *password, const unsigned char *salt, 
-                           unsigned char *key, size_t key_length)
+int derive_key_from_password(const char *password, const unsigned char *salt, unsigned char *key, size_t key_length)
 ```
 - **Účel**: Generuje šifrovací kľúč z hesla pomocou Argon2
 - **Parametre**:
@@ -205,8 +204,7 @@ int derive_key_from_password(const char *password, const unsigned char *salt,
 
 #### 3. aes_xts_crypt
 ```c
-int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len, 
-                  unsigned char *out, int *out_len, unsigned char *tweak)
+int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len, unsigned char *out, int *out_len, unsigned char *tweak)
 ```
 - **Účel**: Vykonáva XTS šifrovanie/dešifrovanie bloku dát
 - **Parametre**:
@@ -228,8 +226,7 @@ int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len,
 
 #### 4. calculate_sector_tweak
 ```c
-void calculate_sector_tweak(const unsigned char *initial_tweak, uint64_t sector_number, 
-                          unsigned char *output_tweak)
+void calculate_sector_tweak(const unsigned char *initial_tweak, uint64_t sector_number, unsigned char *output_tweak)
 ```
 - **Účel**: Vypočíta blokovú úpravu pre daný sektor
 - **Parametre**:
