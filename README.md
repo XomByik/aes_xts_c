@@ -45,6 +45,7 @@ Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov. Je vho
 ### Proces šifrovania
 1. Zadanie vstupných parametrov:
    - Veľkosť kľúča (128 alebo 256 bitov)
+   - Názov súboru ktorý chceme zašifrovať
    - Heslo od používateľa
    
 2. Príprava hlavičky súboru:
@@ -68,6 +69,7 @@ Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov. Je vho
 ### Proces dešifrovania
 1. Zadanie parametrov:
    - Heslo od používateľa
+   - Názov súboru ktorý chceme rozšifrovať
    - Veľkosť kľúča (musí byť rovnaká ako pri šifrovaní)
 
 2. Čítanie hlavičky súboru:
