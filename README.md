@@ -42,6 +42,55 @@ Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov. Je vho
    - Optimalizovaný pre bezpečnosť aj výkon
    - [Podrobnosti o Argon2](https://github.com/P-H-C/phc-winner-argon2)
 
+## Inštalácia
+
+### Windows
+1. Nainštalujte Chocolatey:
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+```
+
+2. Nainštalujte OpenSSL:
+```powershell
+choco install openssl
+```
+
+### Linux
+Ubuntu/Debian:
+```bash
+sudo apt-get update
+sudo apt-get install openssl
+```
+
+## Používanie programu
+
+### Kompilácia programu
+
+#### Automatická kompilácia pomocou Makefile v priečinku s programom
+```bash
+make
+```
+
+### Šifrovanie súborov
+```bash
+./aes_xts encrypt 128 dokument.pdf obrazok.jpg    # Pre 128-bitové kľúče
+./aes_xts encrypt 256 dokument.pdf obrazok.jpg    # Pre 256-bitové kľúče
+```
+- Vytvorí súbory: dokument.pdf.enc, obrazok.jpg.enc
+
+### Dešifrovanie súborov
+```bash
+./aes_xts decrypt dokument.pdf.enc obrazok.jpg.enc
+```
+- Vytvorí súbory: dokument_dec.pdf, obrazok_dec.jpg
+
+### Otestovanie vektorov
+```bash
+./aes_xts test test_vectors.txt
+```
+
 ### Proces šifrovania
 1. Zadanie vstupných parametrov:
    - Veľkosť kľúča (128 alebo 256 bitov)
@@ -98,60 +147,9 @@ Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov. Je vho
 - Číslovanie sektorov:
   - Začíname od 0
   - Každý sektor dostáva svoje poradové číslo
-  - Číslo sektora = offset v súbore / veľkosť sektora
 - Bloková úprava pre sektor:
   - Kombinácia počiatočnej blokovej úpravy a čísla sektora
   - Zabezpečuje unikátnosť šifrovania pre každý sektor
-  - Predvídateľný spôsob výpočtu (dôvera v kryptografickú silu AES)
-
-## Inštalácia
-
-### Windows
-1. Nainštalujte Chocolatey:
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-```
-
-2. Nainštalujte OpenSSL:
-```powershell
-choco install openssl
-```
-
-### Linux
-Ubuntu/Debian:
-```bash
-sudo apt-get update
-sudo apt-get install openssl
-```
-
-## Používanie programu
-
-### Kompilácia programu
-
-#### Automatická kompilácia pomocou Makefile v priečinku s programom
-```bash
-make
-```
-
-### Šifrovanie súborov
-```bash
-./aes_xts encrypt 128 dokument.pdf obrazok.jpg    # Pre 128-bitové kľúče
-./aes_xts encrypt 256 dokument.pdf obrazok.jpg    # Pre 256-bitové kľúče
-```
-- Vytvorí súbory: dokument.pdf.enc, obrazok.jpg.enc
-
-### Dešifrovanie súborov
-```bash
-./aes_xts decrypt dokument.pdf.enc obrazok.jpg.enc
-```
-- Vytvorí súbory: dokument_dec.pdf, obrazok_dec.jpg
-
-### Otestovanie vektorov
-```bash
-./aes_xts test test_vectors.txt
-```
 
 ## Technická dokumentácia
 
