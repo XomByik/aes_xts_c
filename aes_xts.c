@@ -1,5 +1,5 @@
 /****************************************************************************
- * Nazov projektu: AES-XTS Sifrovanie a Desifrovanie Suborov pomocou OpenSSL
+ * Nazov projektu: AES-XTS Sifrovanie a Desifrovanie suborov pomocou OpenSSL
  * ----------------------------------------------------------------------------
  * Subor: aes_xts.c
  * Verzia: 1.1.0
@@ -607,8 +607,7 @@ char* generate_decrypted_filename(const char *filename) {
  * 
  * Popis:
  * Vypocitava jedinecnu tweak hodnotu pre kazdy sektor v subore pomocou
- * XOR operacie medzi pociatocnym tweakom a logickou poziciou sektora.
- * Implementuje VeraCrypt pristup k tvorbe tweak hodnot.
+ * XOR medzi pociatocnym tweakom a logickou poziciou sektora.
  * 
  * Proces spracovania:
  * 1. Skopirovanie pociatocneho tweaku do vystupneho buffera
@@ -691,30 +690,26 @@ void process_file(const char *operation, const char *input_filename,
 
     if (strcmp(operation, "encrypt") == 0) {
         // Generovanie salt a pociatocneho tweaku
-        if (!RAND_bytes(salt, SALT_LENGTH) || 
-            !RAND_bytes(initial_tweak, INITIAL_TWEAK_LENGTH)) {
+        if (!RAND_bytes(salt, SALT_LENGTH) || !RAND_bytes(initial_tweak, INITIAL_TWEAK_LENGTH)) {
             // Spracovanie chyby...
             return;
         }
         
         // Zapis hlavicky (salt + pociatocny tweak)
-        if (fwrite(salt, 1, SALT_LENGTH, outfile) != SALT_LENGTH ||
-            fwrite(initial_tweak, 1, INITIAL_TWEAK_LENGTH, outfile) != INITIAL_TWEAK_LENGTH) {
+        if (fwrite(salt, 1, SALT_LENGTH, outfile) != SALT_LENGTH || fwrite(initial_tweak, 1, INITIAL_TWEAK_LENGTH, outfile) != INITIAL_TWEAK_LENGTH) {
             // Spracovanie chyby...
             return;
         }
     } else {
         // Citanie hlavicky pri desifrovani
-        if (fread(salt, 1, SALT_LENGTH, infile) != SALT_LENGTH ||
-            fread(initial_tweak, 1, INITIAL_TWEAK_LENGTH, infile) != INITIAL_TWEAK_LENGTH) {
+        if (fread(salt, 1, SALT_LENGTH, infile) != SALT_LENGTH || fread(initial_tweak, 1, INITIAL_TWEAK_LENGTH, infile) != INITIAL_TWEAK_LENGTH) {
             // Spracovanie chyby...
             return;
         }
     }
 
     // Derivacia kluca z hesla - upravena dlzka kluca
-    if (derive_key_from_password(password, salt, key, 
-                                key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128) != 0) {
+    if (derive_key_from_password(password, salt, key, key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128) != 0) {
         // Spracovanie chyby...
         return;
     }
@@ -727,8 +722,7 @@ void process_file(const char *operation, const char *input_filename,
     }
 
     // Vyber spravneho modu podla velkosti kluca
-    const EVP_CIPHER *cipher = (key_bits == 256) ? 
-                              EVP_aes_256_xts() : EVP_aes_128_xts();
+    const EVP_CIPHER *cipher = (key_bits == 256) ?  EVP_aes_256_xts() : EVP_aes_128_xts();
 
     // Nastavenie modu podla operacie
     if (strcmp(operation, "encrypt") == 0) {

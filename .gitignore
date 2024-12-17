@@ -1,0 +1,6 @@
+.build/
+aes_xts
+*.exe
+*.o
+*~
+.vscode/
