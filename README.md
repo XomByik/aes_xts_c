@@ -1,4 +1,4 @@
-# AES-XTS Šifrovanie a Dešifrovanie Súborov
+# AES-XTS šifrovanie a dešifrovanie súborov s využitím knižnice OpenSSL
 
 ## Obsah
 1. [Základný prehľad](#základný-prehľad)
