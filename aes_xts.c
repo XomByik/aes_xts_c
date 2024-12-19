@@ -183,7 +183,7 @@ unsigned char* append_data(unsigned char *current_data, int *current_len, const 
  * - Prazdne riadky oddeluju jednotlive vektory
  * 
  * Bezpecnostne kontroly:
- * - Validacia vstupneho formatu
+ * - Overenie vstupneho formatu
  * - Kontrola dlzky vektorov
  * - Overenie alokacie pamate
  * - Spracovanie chyb pri citani
@@ -279,16 +279,16 @@ int load_test_vectors(const char *filename, TestVector **vectors, int *count) {
  * testovacich vektorov. Kazdy vektor je samostatne testovany na sifrovanie.
  * 
  * Proces testovania:
- * 1. Inicializacia open-ssl implementacie kryptografickej funkcie
+ * 1. Inicializacia open-ssl implementacie XTS
  * 2. Nastavenie klucov a parametrov
  * 3. Sifrovanie vstupnych dat (plaintext)
  * 4. Porovnanie vysledku s ocakavanym ciphertextom
  * 5. Vypis vysledku testu
  * 
  * Bezpecnostne kontroly:
- * - Overenie uspesnosti inicializacie kryptografickej funkcie
+ * - Overenie uspesnosti inicializacie OpenSSL XTS
  * - Kontrola navratovych hodnot OpenSSL funkcii
- * - Validacia dlzok vystupnych dat
+ * - Overenie dlzky vystupnych dat
  * - Bezpecne uvolnenie zdrojov
  * 
  * Parametre:
@@ -297,11 +297,10 @@ int load_test_vectors(const char *filename, TestVector **vectors, int *count) {
  * 
  * Vystup:
  * - Vypis uspesnosti/zlyhania pre kazdy vektor
- * - Pri zlyhari detail o nesulad v sifrovani
  * 
  * Pouzitie pamate:
  * - Docasny buffer pre sifrovane data
- * - Automaticke cistenie po dokonceni
+ * - Automaticke vycistenie po dokonceni
  */
 void test_vectors(TestVector *vectors, int vector_count) {
     for (int i = 0; i < vector_count; i++) {
@@ -397,7 +396,7 @@ int derive_key_from_password(const char *password, const unsigned char *salt,
 
     kctx = EVP_KDF_CTX_new(kdf);
 
-    // Derivacia kluca
+    // Odvodenie kluca
     EVP_KDF_derive(kctx, key, out_len, params);
 
     // Uvolnenie pamate
@@ -416,7 +415,7 @@ int derive_key_from_password(const char *password, const unsigned char *salt,
  * Napriklad: "1A2B" -> {0x1A, 0x2B}
  * 
  * Bezpecnostne kontroly:
- * - Validacia dlzky vstupneho retazca
+ * - Overenie dlzky vstupneho retazca
  * - Kontrola spravneho formatu hex znakov
  * - Ochrana proti preteceniu buffera
  * 
@@ -708,7 +707,7 @@ void process_file(const char *operation, const char *input_filename,
         }
     }
 
-    // Derivacia kluca z hesla - upravena dlzka kluca
+    // Odvodenie kluca z hesla
     if (derive_key_from_password(password, salt, key, key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128) != 0) {
         // Spracovanie chyby...
         return;
