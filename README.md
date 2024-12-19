@@ -326,7 +326,7 @@ int test_vectors(const char *test_file)
 ```
 +---------------+-------------------+-------------------+
 | SALT          | Bloková úprava    | Šifrované dáta    |
-| (128 bitov)   | (128 bitov)       |                   |
+| (128 bitov)   | (128 bitov)       | (n-bajtov)        |
 +---------------+-------------------+-------------------+
 ```
 
