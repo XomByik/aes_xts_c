@@ -432,9 +432,11 @@ int hex_to_bytes(const char *hex_str, unsigned char *bytes, int expected_len) {
         return -1; // Nespravna dlzka hex retazca
     }
     for (int i = 0; i < expected_len; i++) {
-        if (sscanf(&hex_str[i * 2], "%2hhx", &bytes[i]) != 1) {
-            return -1; // Chyba pri konverzii
+        unsigned int temp;
+        if (sscanf(&hex_str[i * 2], "%2x", &temp) != 1) {
+            return -1;
         }
+        bytes[i] = (unsigned char)temp;
     }
     return expected_len;
 }
@@ -453,7 +455,7 @@ void get_password(char *password, size_t len) {
     SetConsoleOutputCP(CP_UTF8);
     int i = 0;
     char ch;
-    while ((ch = _getch()) != '\r' && i < len - 1) {
+    while ((ch = _getch()) != '\r' && (size_t)i < len - 1) {
         if (ch == '\b' && i > 0) {
             printf("\b \b");
             i--;
@@ -726,7 +728,7 @@ void process_file(const char *operation, const char *input_filename,
 
 
 int main(int argc, char *argv[]) {
-    if (argc < 4 || 
+    if (argc < 2 || 
         (strcmp(argv[1], "encrypt") != 0 && 
          strcmp(argv[1], "decrypt") != 0 && 
          strcmp(argv[1], "test") != 0)) {
