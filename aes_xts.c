@@ -58,7 +58,6 @@
  * 
  * Popis:
  * Zachytava a spracovava vsetky chybove hlasky z OpenSSL kniznice.
- * Vypise detailne informacie o chybe vratane kodu, spravy a lokalizacie.
  */
 void handle_errors(void) {
     ERR_print_errors_fp(stderr);    // Vypis chybovych hlaseni na stderr
@@ -233,7 +232,7 @@ int load_test_vectors(const char *filename, TestVector **vectors, int *count) {
             fclose(file);
             return -1;
         }
-        // Rozhodovanie podla typu kluca
+        // Rozhodovanie podla typu udajov
         if (strcmp(key, "Key1") == 0) {
             hex_to_bytes(value, current_vector.key1, 16);
         } else if (strcmp(key, "Key2") == 0) {
@@ -289,7 +288,7 @@ int load_test_vectors(const char *filename, TestVector **vectors, int *count) {
  * - Overenie uspesnosti inicializacie OpenSSL XTS
  * - Kontrola navratovych hodnot OpenSSL funkcii
  * - Overenie dlzky vystupnych dat
- * - Bezpecne uvolnenie zdrojov
+ * - Bezpecne uvolnenie/vycistenie zdrojov
  * 
  * Parametre:
  * @param vectors - Pole testovacich vektorov na overenie
@@ -361,7 +360,7 @@ int derive_key_from_password(const char *password, const unsigned char *salt,
     EVP_KDF *kdf = NULL;
     EVP_KDF_CTX *kctx = NULL;
     OSSL_PARAM params[8];
-    size_t out_len = key_length;  // Using provided key length
+    size_t out_len = key_length; 
 
     // Parametre pre Argon2id
     uint32_t iterations = 3;
@@ -369,7 +368,7 @@ int derive_key_from_password(const char *password, const unsigned char *salt,
     uint32_t lanes = 4;
     uint32_t threads = 2;
 
-    // Nastavenie maximalneho poctu vlakien pre KDF
+    // Nastavenie maximalneho poctu pouzitych vlakien pre KDF
     OSSL_set_max_threads(NULL, threads);
 
     // Konfiguracia parametrov pre KDF
@@ -380,9 +379,9 @@ int derive_key_from_password(const char *password, const unsigned char *salt,
     // - strlen(password): dlzka hesla
     *p++ = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_PASSWORD, (void *)password, strlen(password));
     // Volanie OSSL_PARAM_construct_octet_string:
-    // - OSSL_KDF_PARAM_SALT: parameter pre salt
-    // - salt: nahodna salt hodnota
-    // - SALT_LENGTH: dlzka salt (16 bajtov)
+    // - OSSL_KDF_PARAM_SALT: parameter pre sol
+    // - salt: nahodna hodnota soli
+    // - SALT_LENGTH: dlzka soli (16 bajtov)
     *p++ = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, (void *)salt, SALT_LENGTH);
     *p++ = OSSL_PARAM_construct_uint(OSSL_KDF_PARAM_ITER, &iterations);
     *p++ = OSSL_PARAM_construct_uint(OSSL_KDF_PARAM_ARGON2_MEMCOST, &memory_cost);
@@ -412,7 +411,6 @@ int derive_key_from_password(const char *password, const unsigned char *salt,
  * 
  * Popis:
  * Konvertuje hex string na bajty. Kazdy par znakov reprezentuje jeden bajt.
- * Napriklad: "1A2B" -> {0x1A, 0x2B}
  * 
  * Bezpecnostne kontroly:
  * - Overenie dlzky vstupneho retazca
@@ -427,12 +425,6 @@ int derive_key_from_password(const char *password, const unsigned char *salt,
  * Navratove hodnoty:
  * @return expected_len - Pri uspesnej konverzii
  * @return -1 - Pri chybe (nespravna dlzka/format)
- * 
- * Pouzitie:
- * unsigned char bytes[2];
- * if(hex_to_bytes("1A2B", bytes, 2) == -1) {
- *     // Spracovanie chyby
- * }
  */
 int hex_to_bytes(const char *hex_str, unsigned char *bytes, int expected_len) {
     int len = strlen(hex_str);
@@ -491,8 +483,7 @@ void get_password(char *password, size_t len) {
  * Pripojenie pripony k nazvu suboru
  * 
  * Popis:
- * Vytvara novy retazec obsahujuci povodny nazov suboru s pridanou priponou.
- * Zabezpecuje spravnu alokaciu pamate pre novy nazov.
+ * Vytvara novy nazov suboru obsahujuci povodny nazov suboru s pridanou priponou.
  * 
  * Proces:
  * 1. Vypocet potrebnej velkosti pamate
@@ -501,7 +492,6 @@ void get_password(char *password, size_t len) {
  * 
  * Bezpecnostne kontroly:
  * - Overenie vstupnych parametrov
- * - Kontrola alokacie pamate
  * - Ochrana proti preteceniu buffera pomocou snprintf
  * 
  * Parametre:
@@ -509,15 +499,8 @@ void get_password(char *password, size_t len) {
  * @param extension - Pripona na pridanie (vratane bodky)
  * 
  * Navratova hodnota:
- * @return Novy retazec s pripojenou priponou (treba uvolnit pomocou free())
+ * @return Novy retazec s pripojenou priponou
  * @return NULL pri chybe alokacie
- * 
- * Pouzitie:
- * char *novy_nazov = append_extension("subor", ".enc");
- * if(novy_nazov) {
- *     // Pouzitie noveho nazvu
- *     free(novy_nazov);
- * }
  */
 char* append_extension(const char *filename, const char *extension) {
     size_t len = strlen(filename) + strlen(extension) + 1;
@@ -548,7 +531,7 @@ char* append_extension(const char *filename, const char *extension) {
  * Bezpecnostne kontroly:
  * - Overenie vstupneho parametra
  * - Kontrola alokacie pamate
- * - Ochrana proti buffer overflow
+ * - Ochrana proti preteceniu buffra pomocou snprintf
  * - Spracovanie chybnych vstupov
  * 
  * Parametre:
@@ -578,13 +561,12 @@ char* generate_decrypted_filename(const char *filename) {
     strncpy(base_name, filename, base_len);
     base_name[base_len] = '\0';
 
-    // Najst posledny bod v povodnom nazve suboru
+    // Najdenie poslednej bodky v povodnom nazve suboru a pridanie _dec pred nu
     char *dot = strrchr(base_name, '.');
     if (dot) {
         size_t name_before_dot_len = dot - base_name;
         size_t new_name_len = name_before_dot_len + strlen("_dec") + strlen(dot) + 1;
         char *new_name = malloc(new_name_len);
-
         strncpy(new_name, base_name, name_before_dot_len);
         new_name[name_before_dot_len] = '\0';
         strcat(new_name, "_dec");
@@ -592,7 +574,7 @@ char* generate_decrypted_filename(const char *filename) {
         free(base_name);
         return new_name;
     } else {
-        // Ak subor nema povodnu priponu, pridat _dec
+        // Ak subor nema povodnu priponu, pridame _dec na koniec
         size_t new_name_len = base_len + strlen("_dec") + 1;
         char *new_name = malloc(new_name_len);
         snprintf(new_name, new_name_len, "%s_dec", base_name);
@@ -608,9 +590,9 @@ char* generate_decrypted_filename(const char *filename) {
  * Vypocitava jedinecnu tweak hodnotu pre kazdy sektor v subore pomocou
  * XOR medzi pociatocnym tweakom a logickou poziciou sektora.
  * 
- * Proces spracovania:
+ * Proces:
  * 1. Skopirovanie pociatocneho tweaku do vystupneho buffera
- * 2. XOR operacia logickej pozicie sektora s tweakom
+ * 2. XOR logickej pozicie sektora s tweakom
  * 
  * Bezpecnostne vlastnosti:
  * - Kazdy sektor ma unikatny tweak
@@ -630,9 +612,8 @@ void calculate_sector_tweak(const unsigned char *initial_tweak,
                           uint64_t sector_number, 
                           unsigned char *output_tweak) {
     // Skopirovanie pociatocneho tweaku (128 bitov)
-    memcpy(output_tweak, initial_tweak, TWEAK_LENGTH);
-    
-    // XOR celych 128 bitov po 64-bitovych castiach
+    memcpy(output_tweak, initial_tweak, TWEAK_LENGTH);    
+    // XOR celych 128 bitov po dvoch 64-bitovych castiach
     for(int i = 0; i < TWEAK_LENGTH; i += 8) {
         uint64_t *chunk = (uint64_t *)(output_tweak + i);
         *chunk ^= sector_number;
@@ -671,92 +652,71 @@ void process_file(const char *operation, const char *input_filename,
     int in_len, out_len;
     uint64_t sector_number = 0;
     char *output_filename = NULL;
-
     // Vytvorenie nazvu vystupneho suboru
     if (strcmp(operation, "encrypt") == 0) {
         output_filename = append_extension(input_filename, ".enc");
     } else {
         output_filename = generate_decrypted_filename(input_filename);
     }
-
     // Otvorenie suborov
     FILE *infile = fopen(input_filename, "rb");
     FILE *outfile = fopen(output_filename, "wb");
     if (!infile || !outfile) {
-        // Spracovanie chyby...
         return;
     }
 
     if (strcmp(operation, "encrypt") == 0) {
-        // Generovanie salt a pociatocneho tweaku
+        // Generovanie soli a pociatocneho tweaku
         if (!RAND_bytes(salt, SALT_LENGTH) || !RAND_bytes(initial_tweak, INITIAL_TWEAK_LENGTH)) {
-            // Spracovanie chyby...
             return;
         }
-        
-        // Zapis hlavicky (salt + pociatocny tweak)
+        // Zapis hlavicky (sol + pociatocny tweak)
         if (fwrite(salt, 1, SALT_LENGTH, outfile) != SALT_LENGTH || fwrite(initial_tweak, 1, INITIAL_TWEAK_LENGTH, outfile) != INITIAL_TWEAK_LENGTH) {
-            // Spracovanie chyby...
             return;
         }
     } else {
         // Citanie hlavicky pri desifrovani
         if (fread(salt, 1, SALT_LENGTH, infile) != SALT_LENGTH || fread(initial_tweak, 1, INITIAL_TWEAK_LENGTH, infile) != INITIAL_TWEAK_LENGTH) {
-            // Spracovanie chyby...
             return;
         }
     }
-
     // Odvodenie kluca z hesla
     if (derive_key_from_password(password, salt, key, key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128) != 0) {
-        // Spracovanie chyby...
         return;
     }
-
     // Inicializacia sifrovania
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) {
-        // Spracovanie chyby...
         return;
     }
-
     // Vyber spravneho modu podla velkosti kluca
     const EVP_CIPHER *cipher = (key_bits == 256) ?  EVP_aes_256_xts() : EVP_aes_128_xts();
-
     // Nastavenie modu podla operacie
     if (strcmp(operation, "encrypt") == 0) {
         EVP_EncryptInit_ex(ctx, cipher, NULL, key1, key2);
     } else {
         EVP_DecryptInit_ex(ctx, cipher, NULL, key1, key2);
     }
-
     // Spracovanie po sektoroch
     while ((in_len = fread(in_buf, 1, SECTOR_SIZE, infile)) > 0) {
         // Vypocet tweaku pre aktualny sektor
         calculate_sector_tweak(initial_tweak, sector_number, sector_tweak);
-
         // Sifrovanie/desifrovanie sektora
         if (aes_xts_crypt(ctx, in_buf, in_len, out_buf, &out_len, sector_tweak) != 0) {
-            // Spracovanie chyby...
             break;
         }
-
         // Zapis vystupu
         if (fwrite(out_buf, 1, out_len, outfile) != (size_t)out_len) {
-            // Spracovanie chyby...
             break;
         }
-
         sector_number++;
     }
-
     // Finalizacia
     if (strcmp(operation, "encrypt") == 0) {
         EVP_EncryptFinal_ex(ctx, out_buf, &out_len);
     } else {
         EVP_DecryptFinal_ex(ctx, out_buf, &out_len);
     }
-
     // Cistenie
     EVP_CIPHER_CTX_free(ctx);
     fclose(infile);
@@ -776,7 +736,6 @@ int main(int argc, char *argv[]) {
     }
 
     const char *operation = argv[1];
-
     // Spracovanie testovacieho modu
     if (strcmp(operation, "test") == 0) {
         // Kontrola spravneho poctu argumentov pre testovaci mod
@@ -788,7 +747,6 @@ int main(int argc, char *argv[]) {
         const char *test_file = argv[2];         // Subor s testovacimi vektormi
         TestVector *vectors = NULL;              // Pole testovacich vektorov
         int vector_count = 0;                    // Pocet nacitanych vektorov
-
         // Nacitanie testovacich vektorov zo suboru
         if (load_test_vectors(test_file, &vectors, &vector_count) != 0) {
             printf("Chyba pri nacitani testovacich vektorov zo suboru: %s\n", test_file);
@@ -797,8 +755,7 @@ int main(int argc, char *argv[]) {
 
         printf("Nacitane testovacie vektory: %d\n\n", vector_count);
         test_vectors(vectors, vector_count);     // Spustenie testovania
-
-        // Systematicke uvolnenie pamate pre kazdy vektor
+        // Uvolnenie pamate pre kazdy nacitany vektor
         for (int i = 0; i < vector_count; i++) {
             free(vectors[i].plaintext);          // Uvolnenie plaintext bufferu
             free(vectors[i].ciphertext);         // Uvolnenie ciphertext bufferu
@@ -807,7 +764,7 @@ int main(int argc, char *argv[]) {
         return 0;                               // Ukoncenie po dokonceni testovania
     }
 
-    // Kontrola a nastavenie velkosti kluca
+    // Nastavenie a kontrola spravnej velkosti kluca
     int key_bits = 128;  // Predvolena hodnota
     if (strcmp(argv[2], "256") == 0) {
         key_bits = 256;
@@ -819,14 +776,14 @@ int main(int argc, char *argv[]) {
     char password[256];
     get_password(password, sizeof(password));
 
-    // Spracovanie suborov od indexu 3 (po operation a key_bits)
+    // Spracovanie suborov od indexu argumentu 3 (po zvoleni operacie a rezimu 128/256)
     for (int i = 3; i < argc; i++) {
         const char *input_filename = argv[i];
         process_file(operation, input_filename, password, key_bits);
     }
 
     // Cistenie OpenSSL zdrojov a uvolnenie pamate
-    EVP_cleanup();                       // Vycistenie sifrovanych textov
+    EVP_cleanup();                       // Vycistenie/uvolnenie sifrovanych udajov
     ERR_free_strings();                 // Uvolnenie chybovych retazcov
 
     return 0;
