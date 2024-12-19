@@ -1,9 +1,18 @@
-# Základné nastavenia
+# Zakladne nastavenia
 CC = gcc
 CFLAGS = -Wall -Wextra -O2
-LDFLAGS = -lssl -lcrypto
 
-# Zdrojové súbory
+# Pre Windows: Cesty k OpenSSL
+ifeq ($(OS),Windows_NT)
+    LDFLAGS = -L"C:/Program Files/OpenSSL-Win64/lib/VC/x64/MT" -lssl -lcrypto
+    CFLAGS += -I"C:/Program Files/OpenSSL-Win64/include"
+else
+    # Pre Linux: Systemove cesty
+    LDFLAGS = -lssl -lcrypto
+    CFLAGS += -I/usr/include
+endif
+
+# Zdrojove subory
 SRC = aes_xts.c
 OBJ = $(SRC:.c=.o)
 EXECUTABLE = aes_xts
@@ -16,18 +25,18 @@ else
     RM = rm -f
 endif
 
-# Hlavný cieľ
+# Hlavny ciel
 all: $(EXECUTABLE)
 
 # Linkovanie
 $(EXECUTABLE): $(OBJ)
 	$(CC) $(OBJ) -o $@ $(LDFLAGS)
 
-# Kompilácia
+# Kompilacia
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Vyčistenie
+# Vycistenie
 clean:
 	$(RM) *.o
 
