@@ -98,9 +98,11 @@ make
    - Heslo od používateľa
    
 2. Príprava hlavičky súboru:
-   - Vygenerovanie náhodného 128-bitového salt
-   - Vygenerovanie náhodnej 128-bitovej blokovej úpravy
-   - Uloženie salt a blokovej úpravy na začiatok súboru
+   - Vygenerovanie náhodnej 128-bitovej soli cez CSPRNG
+   - Vygenerovanie náhodnej 128-bitovej počiatočnej blokovej úpravy (počiatočného čísla
+     sektora) cez CSPRNG
+   - Uloženie salt a počiatočnej blokovej úpravy na začiatok súboru
+   - Tento prístup zabezpečuje, že súbor je možné rozšifrovať na rôznych miestach
 
 3. Derivácia kľúčov:
    - Z hesla a salt sa pomocou Argon2id vytvorí šifrovací kľúč
@@ -109,10 +111,10 @@ make
    - Prvá polovica sa použije pre šifrovanie dát
    - Druhá polovica sa použije pre blokové úpravy
 
-4. Spracovanie súboru po sektoroch (4096 bitov):
+4. Spracovanie súboru po sektoroch (512 bitov):
    - Pre každý sektor sa vypočíta jedinečná bloková úprava
    - Bloková úprava = počiatočná bloková úprava XOR číslo_sektora
-   - Číslo sektora je logická pozícia v súbore
+   - Číslo sektora je v našom prípade logická pozícia (posun pri prechádzaní) v súbore
    - Šifrovanie dát v sektore pomocou AES-XTS s vypočítanou blokovou úpravou
 
 ### Proces dešifrovania
@@ -230,9 +232,9 @@ void calculate_sector_tweak(const unsigned char *initial_tweak, uint64_t sector_
 ```
 - **Účel**: Vypočíta blokovú úpravu pre daný sektor
 - **Parametre**:
-  - initial_tweak: počiatočná bloková úprava
-  - sector_number: číslo sektora
-  - output_tweak: výstupný buffer pre blokovú úpravu
+  - initial_tweak: počiatočná bloková úprava vygenerovaná CSPRNG (128 bitov)
+  - sector_number: logické číslo sektora (pozícia v súbore)
+  - output_tweak: výstupný buffer pre vypočítanú blokovú úpravu (128 bitov)
 - **Proces**:
   1. Skopíruje počiatočnú blokovú úpravu do výstupného buffera
   2. Aplikuje modifikáciu podľa čísla sektora:
@@ -326,7 +328,7 @@ int test_vectors(const char *test_file)
 ```
 +---------------+-------------------+-------------------+
 | SALT          | Bloková úprava    | Šifrované dáta    |
-| (128 bitov)   | (128 bitov)       | (n-bajtov)        |
+| (32 bajtov)   | (32 bajtov)       | (n-bajtov)        |
 +---------------+-------------------+-------------------+
 ```
 

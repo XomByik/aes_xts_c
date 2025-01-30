@@ -120,8 +120,8 @@ void print_help() {
  *
  * @return 0 pri uspesnom dokonceni, -1 pri chybe
  */
-int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len,
-                  unsigned char *out, int *out_len, unsigned char *tweak) {
+int aes_xts_crypt(EVP_CIPHER_CTX *ctx, uint8_t *in, int in_len,
+                  uint8_t *out, int *out_len, uint8_t *tweak) {
     int len;
     *out_len = 0;
     // Volanie EVP_CipherInit_ex:
@@ -178,9 +178,9 @@ int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len,
  *
  * @return Pointer na rozsirene pole alebo NULL pri chybe
  */
-unsigned char *append_data(unsigned char *current_data, int *current_len,
+uint8_t *append_data(uint8_t *current_data, int *current_len,
                            const char *hex_str, int hex_len) {
-    unsigned char *new_data =
+    uint8_t *new_data =
         realloc(current_data, *current_len + hex_len);
     hex_to_bytes(hex_str, new_data + *current_len, hex_len);
     *current_len += hex_len;
@@ -352,7 +352,7 @@ void test_vectors(TestVector *vectors, int vector_count) {
             handle_errors();
         }
 
-        unsigned char enc_out[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH];
+        uint8_t enc_out[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH];
         int enc_out_len = 0;
 
         aes_xts_crypt(ctx, vectors[i].plaintext, vectors[i].plaintext_len,
@@ -395,7 +395,7 @@ void test_vectors(TestVector *vectors, int vector_count) {
  * @return 0 pri uspesnom odvodeni, -1 pri chybe
  */
 int derive_key_from_password(const char *password,
-                             const unsigned char *salt, unsigned char *key,
+                             const uint8_t *salt, uint8_t *key,
                              size_t key_length) {
     EVP_KDF *kdf = NULL;
     EVP_KDF_CTX *kctx = NULL;
@@ -470,18 +470,18 @@ int derive_key_from_password(const char *password,
  * @return expected_len - Pri uspesnej konverzii
  * @return -1 - Pri chybe (nespravna dlzka/format)
  */
-int hex_to_bytes(const char *hex_str, unsigned char *bytes,
+int hex_to_bytes(const char *hex_str, uint8_t *bytes,
                  int expected_len) {
     int len = strlen(hex_str);
     if (len != expected_len * 2) {
         return -1;  // Nespravna dlzka hex retazca
     }
     for (int i = 0; i < expected_len; i++) {
-        unsigned int temp;
+        uint32_t temp;
         if (sscanf(&hex_str[i * 2], "%2x", &temp) != 1) {
             return -1;
         }
-        bytes[i] = (unsigned char)temp;
+        bytes[i] = (uint8_t)temp;
     }
     return expected_len;
 }
@@ -655,12 +655,12 @@ char *generate_decrypted_filename(const char *filename) {
  * @param output_tweak - Vystupny buffer pre vypocitany tweak (128 bitov)
  *
  * Pouzitie:
- * unsigned char tweak[16];
+ * uint8_t tweak[16];
  * calculate_sector_tweak(initial_tweak, 0, tweak);
  */
-void calculate_sector_tweak(const unsigned char *initial_tweak,
+void calculate_sector_tweak(const uint8_t *initial_tweak,
                             uint64_t sector_number,
-                            unsigned char *output_tweak) {
+                            uint8_t *output_tweak) {
     // Skopirovanie pociatocneho tweaku (128 bitov)
     memcpy(output_tweak, initial_tweak, TWEAK_LENGTH);
     // XOR celych 128 bitov po dvoch 64-bitovych castiach
@@ -690,17 +690,17 @@ void calculate_sector_tweak(const unsigned char *initial_tweak,
  */
 void process_file(const char *operation, const char *input_filename,
                   const char *password, int key_bits) {
-    unsigned char salt[SALT_LENGTH];
-    unsigned char initial_tweak[INITIAL_TWEAK_LENGTH];
-    unsigned char sector_tweak[TWEAK_LENGTH];
+    uint8_t salt[SALT_LENGTH];
+    uint8_t initial_tweak[TWEAK_LENGTH];
+    uint8_t sector_tweak[TWEAK_LENGTH];
     // Alokacia kluca podla zvolenej velkosti
-    unsigned char
+    uint8_t
         key[key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128];
-    unsigned char *key1 = key;
-    unsigned char *key2 =
+    uint8_t *key1 = key;
+    uint8_t *key2 =
         key + (key_bits / 8);  // Polovica celkovej dlzky kluca
-    unsigned char in_buf[SECTOR_SIZE];
-    unsigned char out_buf[SECTOR_SIZE + EVP_MAX_BLOCK_LENGTH];
+    uint8_t in_buf[SECTOR_SIZE];
+    uint8_t out_buf[SECTOR_SIZE + EVP_MAX_BLOCK_LENGTH];
     int in_len, out_len;
     uint64_t sector_number = 0;
     char *output_filename = NULL;
@@ -720,20 +720,20 @@ void process_file(const char *operation, const char *input_filename,
     if (strcmp(operation, "encrypt") == 0) {
         // Generovanie soli a pociatocneho tweaku
         if (!RAND_bytes(salt, SALT_LENGTH) ||
-            !RAND_bytes(initial_tweak, INITIAL_TWEAK_LENGTH)) {
+            !RAND_bytes(initial_tweak, TWEAK_LENGTH)) {
             return;
         }
         // Zapis hlavicky (sol + pociatocny tweak)
         if (fwrite(salt, 1, SALT_LENGTH, outfile) != SALT_LENGTH ||
-            fwrite(initial_tweak, 1, INITIAL_TWEAK_LENGTH, outfile) !=
-                INITIAL_TWEAK_LENGTH) {
+            fwrite(initial_tweak, 1, TWEAK_LENGTH, outfile) !=
+                TWEAK_LENGTH) {
             return;
         }
     } else {
         // Citanie hlavicky pri desifrovani
         if (fread(salt, 1, SALT_LENGTH, infile) != SALT_LENGTH ||
-            fread(initial_tweak, 1, INITIAL_TWEAK_LENGTH, infile) !=
-                INITIAL_TWEAK_LENGTH) {
+            fread(initial_tweak, 1, TWEAK_LENGTH, infile) !=
+                TWEAK_LENGTH) {
             return;
         }
     }

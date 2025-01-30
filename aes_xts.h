@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <stdint.h>
 #ifndef AES_XTS_H
 #define AES_XTS_H
 
@@ -28,23 +28,22 @@
 #define BUFFER_SIZE 4096   // Velkost bufferu pre sifrovanie/desifrovanie
 #define AES_KEY_LENGTH 16  // Dlzka kluca (2x 128-bitovy kluc)
 #define SALT_LENGTH 16     // Dlzka hodnoty salt
-#define TWEAK_LENGTH 16    // Velkost tweak hodnoty pre XTS mod
+#define TWEAK_LENGTH 32    // Velkost tweak hodnoty pre XTS mod
 #define MAX_LINE_LENGTH \
     2048                 // Maximalna dlzka riadku pre testovacie vektory
 #define SECTOR_SIZE 512  // Velkost sektora
-#define INITIAL_TWEAK_LENGTH 16  // Dlzka pociatocneho tweaku
 #define AES_KEY_LENGTH_128 32    // 2x 128-bit pre XTS-AES-128
 #define AES_KEY_LENGTH_256 64    // 2x 256-bit pre XTS-AES-256
 
 // Struktura pre testovacie vektory podla standardu IEEE 1619-2007
 typedef struct {
-    unsigned char key1[16];     // Prvy kluc pre sifrovanie dat
-    unsigned char key2[16];     // Druhy kluc pre spracovanie tweak hodnoty
-    unsigned char ducn[16];     // Data Unit Complex Number (tweak hodnota)
-    unsigned char *plaintext;   // Buffer pre nesifrovane data
-    int plaintext_len;          // Dlzka nesifrovaneho textu
-    unsigned char *ciphertext;  // Buffer pre sifrovane data
-    int ciphertext_len;         // Dlzka sifrovaneho textu
+    uint8_t key1[16];     // Prvy kluc pre sifrovanie dat
+    uint8_t key2[16];     // Druhy kluc pre spracovanie tweak hodnoty
+    uint8_t ducn[16];     // Data Unit Complex Number (tweak hodnota)
+    uint8_t *plaintext;   // Buffer pre nesifrovane data
+    int plaintext_len;    // Dlzka nesifrovaneho textu
+    uint8_t *ciphertext;  // Buffer pre sifrovane data
+    int ciphertext_len;   // Dlzka sifrovaneho textu
 } TestVector;
 
 // Hlavne kryptograficke funkcie
@@ -63,8 +62,7 @@ void handle_errors(void);
  * @param expected_len Ocakavana dlzka vystupu v bajtoch
  * @return Pocet skonvertovanych bajtov alebo -1 pri chybe
  */
-int hex_to_bytes(const char *hex_str, unsigned char *bytes,
-                 int expected_len);
+int hex_to_bytes(const char *hex_str, uint8_t *bytes, int expected_len);
 
 /**
  * Odvodzuje sifrovaci kluc z hesla pomocou funkcie Argon2id
@@ -77,9 +75,8 @@ int hex_to_bytes(const char *hex_str, unsigned char *bytes,
  * pre 256-bit)
  * @return 0 pri uspesnom odvodeni, -1 pri chybe
  */
-int derive_key_from_password(const char *password,
-                             const unsigned char *salt, unsigned char *key,
-                             size_t key_length);
+int derive_key_from_password(const char *password, const uint8_t *salt, 
+                             uint8_t *key, size_t key_length);
 
 /**
  * Sifruje alebo desifruje data pomocou AES-XTS
@@ -93,8 +90,8 @@ int derive_key_from_password(const char *password,
  * @param tweak Tweak hodnota pre AES-XTS
  * @return 0 pri uspesnej operacii, -1 pri chybe
  */
-int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len,
-                  unsigned char *out, int *out_len, unsigned char *tweak);
+int aes_xts_crypt(EVP_CIPHER_CTX *ctx, uint8_t *in, int in_len,
+                  uint8_t *out, int *out_len, uint8_t *tweak);
 
 /**
  * Vypocita tweak hodnotu pre sektor
@@ -103,9 +100,8 @@ int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len,
  * @param sector_number Cislo sektoru
  * @param output_tweak Vystupna tweak hodnota
  */
-void calculate_sector_tweak(const unsigned char *initial_tweak,
-                            uint64_t sector_number,
-                            unsigned char *output_tweak);
+void calculate_sector_tweak(const uint8_t *initial_tweak,
+                            uint64_t sector_number, uint8_t *output_tweak);
 
 // Funkcie pre pracu s testovacimi vektormi
 
@@ -135,7 +131,7 @@ void test_vectors(TestVector *vectors, int vector_count);
  * @param data Buffer s datami na vypis
  * @param len Dlzka dat
  */
-void print_hex_output(const char *label, const unsigned char *data,
+void print_hex_output(const char *label, const uint8_t *data,
                       int len);
 
 // Pomocne funkcie
