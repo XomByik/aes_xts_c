@@ -3,8 +3,8 @@
  *OpenSSL
  * ----------------------------------------------------------------------------
  * Subor: aes_xts.c
- * Verzia: 1.1.0
- * Datum: 16.12.2024
+ * Verzia: 1.1.1
+ * Datum: 30.1.2025
  *
  * Autor: Kamil Berecky
  *
@@ -35,14 +35,6 @@
  *************************************************************************/
 
 #include "aes_xts.h"
-
-#ifdef _WIN32
-#include <conio.h>
-#include <windows.h>
-#else
-#include <termios.h>
-#include <unistd.h>
-#endif
 
 /**
  * Makro pre kontrolu navratovych hodnot OpenSSL funkcii
@@ -89,13 +81,16 @@ void handle_errors(void) {
  * - Pri poziadavke na napovedu
  */
 void print_help() {
-    printf("Pouzitie: program [operacia] [subory...]\n");
+    printf("Pouzitie: ./aes_xts [encrypt/decrypt/test] [128/256] [subory...]\n");
     printf("Operacie:\n");
     printf("  encrypt [subory...]  - Sifrovanie zadanych suborov\n");
     printf("  decrypt [subory...]  - Desifrovanie zadanych suborov\n");
     printf(
         "  test [subor]         - Testovanie sifrovania s testovacimi "
         "vektormi\n");
+    printf("Rezim :\n");
+    printf("  128 - Rychlejsi 128-bitovy rezim sifry AES\n");
+    printf("  256 - Najbezpecnejsi 256-bitovy rezim sifry AES\n");
 }
 
 /**
@@ -792,16 +787,41 @@ void process_file(const char *operation, const char *input_filename,
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2 || (strcmp(argv[1], "encrypt") != 0 &&
-                     strcmp(argv[1], "decrypt") != 0 &&
-                     strcmp(argv[1], "test") != 0)) {
-        printf("Pouzitie: %s [encrypt|decrypt] [128|256] [subory...]\n",
-               argv[0]);
-        printf("alebo: %s test [subor_s_testami]\n", argv[0]);
+    // Vypis verzie a napovedy ak nie su zadane argumenty
+    if (argc < 2) {
+        printf("AES-XTS sifrovanie a desifrovanie suborov pomocou OpenSSL\n");
+        printf("Verzia: 1.1.0\n");
+        printf("Datum: 30.1.2025\n\n");
+        print_help();
         return 1;
     }
 
     const char *operation = argv[1];
+
+    // Kontrola typu operacie
+    if (strcmp(operation, "encrypt") != 0 && 
+        strcmp(operation, "decrypt") != 0 && 
+        strcmp(operation, "test") != 0) {
+        print_help();
+        return 1;
+    }
+
+    // Pre sifrovanie a desifrovanie potrebujeme aspon 4 argumenty:
+    // program encrypt/decrypt 128/256 subor
+    if ((strcmp(operation, "encrypt") == 0 || strcmp(operation, "decrypt") == 0) 
+        && argc < 4) {
+        printf("Nedostatocny pocet argumentov pre %s\n", operation);
+        print_help();
+        return 1;
+    }
+
+    if (strcmp(argv[1], "encrypt") != 0 && 
+        strcmp(argv[1], "decrypt") != 0 && 
+        strcmp(argv[1], "test") != 0) {
+        print_help();
+        return 1;
+    }
+
     // Spracovanie testovacieho modu
     if (strcmp(operation, "test") == 0) {
         // Kontrola spravneho poctu argumentov pre testovaci mod
