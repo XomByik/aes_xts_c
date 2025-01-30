@@ -41,7 +41,7 @@ Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov. Je vho
    - Optimalizovaný pre bezpečnosť aj výkon
    - [Podrobnosti o Argon2](https://github.com/P-H-C/phc-winner-argon2)
 
-## Inštalácia
+## Inštalácia OpenSSL
 
 ### Windows
 1. Nainštalujte Chocolatey:
