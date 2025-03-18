@@ -1,177 +1,160 @@
-// aes_xts.h
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
 #ifndef AES_XTS_H
 #define AES_XTS_H
 
-#include <openssl/core_names.h>
-#include <openssl/err.h>
-#include <openssl/evp.h>
-#include <openssl/kdf.h>
-#include <openssl/params.h>
-#include <openssl/rand.h>
-#include <openssl/thread.h>
-
-#ifdef _WIN32
-#include <conio.h>
-#include <locale.h>
-#include <windows.h>
-#else
-#include <termios.h>
-#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#ifdef _OPENMP
+#include <omp.h>
 #endif
 
-// Konfiguracne konstanty
-#define BUFFER_SIZE 4096   // Velkost bufferu pre sifrovanie/desifrovanie
-#define AES_KEY_LENGTH 16  // Dlzka kluca (2x 128-bitovy kluc)
-#define SALT_LENGTH 16     // Dlzka hodnoty salt
-#define TWEAK_LENGTH 32    // Velkost tweak hodnoty pre XTS mod
-#define MAX_LINE_LENGTH \
-    2048                 // Maximalna dlzka riadku pre testovacie vektory
-#define SECTOR_SIZE 512  // Velkost sektora
-#define AES_KEY_LENGTH_128 32    // 2x 128-bit pre XTS-AES-128
-#define AES_KEY_LENGTH_256 64    // 2x 256-bit pre XTS-AES-256
+#ifdef _WIN32
+    #include <windows.h>
+    #include <time.h>   
+    #include <conio.h>  
+    #include <winioctl.h>
+#else
+    #include <unistd.h>
+    #include <fcntl.h>
+    #include <sys/ioctl.h>
+    #include <linux/fs.h>
+    #include <termios.h>
+    #include <sys/stat.h>
+    #include <linux/hdreg.h>
+    #include <dirent.h>
+#endif
 
-// Struktura pre testovacie vektory podla standardu IEEE 1619-2007
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <openssl/err.h>
+#include <openssl/kdf.h>
+
+#define SALT_LENGTH 16
+#define TWEAK_LENGTH 16
+#define AES_KEY_LENGTH_128 16
+#define AES_KEY_LENGTH_256 32
+
+typedef enum {
+    DEVICE_TYPE_UNKNOWN,
+    DEVICE_TYPE_DISK,
+    DEVICE_TYPE_VOLUME
+} device_type_t;
+
+#define BUFFER_SIZE (8 * 1024 * 1024)  
+
+#define SECTOR_SIZE 4096
+#define KEY_SIZE 32  
+#define IV_SIZE 16   
+#define SALT_SIZE 16  
+#define HEADER_MAGIC "AES-XTS-HDR"
+#define HEADER_VERSION 1
+#define HEADER_SECTOR 62  
+#define RESERVED_SECTORS 64  
+
+#define KEY_SIZE_128 16  
+#define KEY_SIZE_256 32  
+
+#pragma pack(push, 1)  
 typedef struct {
-    uint8_t key1[16];     // Prvy kluc pre sifrovanie dat
-    uint8_t key2[16];     // Druhy kluc pre spracovanie tweak hodnoty
-    uint8_t ducn[16];     // Data Unit Complex Number (tweak hodnota)
-    uint8_t *plaintext;   // Buffer pre nesifrovane data
-    int plaintext_len;    // Dlzka nesifrovaneho textu
-    uint8_t *ciphertext;  // Buffer pre sifrovane data
-    int ciphertext_len;   // Dlzka sifrovaneho textu
-} TestVector;
+    char magic[6];
+    uint8_t version;
+    uint8_t encryption_type;
+    uint32_t start_sector;
+    uint32_t iterations;
+    uint32_t memory_cost;
+    uint32_t key_bits;
+    uint8_t salt[SALT_SIZE];
+    uint8_t verification_data[32];  
+    uint8_t padding[0];  
+} xts_header_t;
+#pragma pack(pop)
 
-// Hlavne kryptograficke funkcie
+typedef struct {
+    #ifdef _WIN32
+    HANDLE handle;
+    LARGE_INTEGER size;
+    device_type_t type;
+    char path[MAX_PATH];
+    #else
+    int fd;
+    uint64_t size;
+    #endif
+} device_context_t;
 
-/**
- * Spracovanie chyb OpenSSL kniznice
- * Vypise chybove hlasky a ukonci program
- */
-void handle_errors(void);
+#ifndef _WIN32
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t magic[8];              
+    uint8_t salt[SALT_LENGTH];     
+    uint8_t initial_tweak[TWEAK_LENGTH]; 
+    uint8_t verification_data[32];  
+    uint64_t partition_size;        
+    uint8_t reserved[64];           
+} PartitionHeader;
+#pragma pack(pop)
+#endif
 
-/**
- * Konvertuje hexadecimalny retazec na pole bajtov
- *
- * @param hex_str Vstupny hexadecimalny retazec
- * @param bytes Vystupne pole bajtov
- * @param expected_len Ocakavana dlzka vystupu v bajtoch
- * @return Pocet skonvertovanych bajtov alebo -1 pri chybe
- */
-int hex_to_bytes(const char *hex_str, uint8_t *bytes, int expected_len);
+#define AES_XTS_SUCCESS 0
+#define AES_XTS_ERROR_OPENSSL -1
+#define AES_XTS_ERROR_IO -2
+#define AES_XTS_ERROR_PARAM -3
+#define AES_XTS_ERROR_MEMORY -4
+#define AES_XTS_ERROR_PERMISSION -5
+#define AES_XTS_ERROR_WRONG_PASSWORD -6
 
-/**
- * Odvodzuje sifrovaci kluc z hesla pomocou funkcie Argon2id
- *
- * @param password Heslo zadane pouzivatelom
- * @param salt Nahodna salt hodnota
- * @param key Vystupny buffer pre kluc (32 bajtov pre AES-128-XTS, 64
- * bajtov pre AES-256-XTS)
- * @param key_length Pozadovana dlzka kluca v bajtoch (32 pre 128-bit, 64
- * pre 256-bit)
- * @return 0 pri uspesnom odvodeni, -1 pri chybe
- */
-int derive_key_from_password(const char *password, const uint8_t *salt, 
-                             uint8_t *key, size_t key_length);
+void aes_xts_init(void);
+void aes_xts_cleanup(void);
+int32_t aes_xts_encrypt_sector(const uint8_t *key1, const uint8_t *key2, uint64_t sector_num, uint8_t *data, size_t data_len, int key_bits);
+int32_t aes_xts_decrypt_sector(const uint8_t *key1, const uint8_t *key2, uint64_t sector_num, uint8_t *data, size_t data_len, int key_bits);
+int32_t aes_xts_crypt_sector(const uint8_t *key1, const uint8_t *key2, uint64_t sector_num, uint8_t *data, size_t data_len, int encrypt, int key_bits);
+void print_openssl_error(void);
+int derive_keys_from_password(
+    const char *password, 
+    const unsigned char *salt,
+    size_t salt_len,
+    unsigned char *key1, 
+    unsigned char *key2,
+    int key_bits,
+    uint32_t iterations,
+    uint32_t memory_cost
+);
+void read_password(char *password, size_t max_len, const char *prompt);
+int process_user_confirmation(const char *device_path, int key_bits);
+int process_password_input(char *password, size_t password_size, int verify);
 
-/**
- * Sifruje alebo desifruje data pomocou AES-XTS
- *
- * @param ctx Kontext pre sifrovanie/desifrovanie
- * (Konfiguracna struktura sifrovania/desifrovania potrebna pre OpenSSL)
- * @param in Vstupny buffer s datami
- * @param in_len Dlzka vstupnych dat
- * @param out Vystupny buffer pre data
- * @param out_len Dlzka vystupnych dat
- * @param tweak Tweak hodnota pre AES-XTS
- * @return 0 pri uspesnej operacii, -1 pri chybe
- */
-int aes_xts_crypt(EVP_CIPHER_CTX *ctx, uint8_t *in, int in_len,
-                  uint8_t *out, int *out_len, uint8_t *tweak);
+int open_device(const char *path, device_context_t *ctx);
+void close_device(device_context_t *ctx);
 
-/**
- * Vypocita tweak hodnotu pre sektor
- *
- * @param initial_tweak Inicialna tweak hodnota
- * @param sector_number Cislo sektoru
- * @param output_tweak Vystupna tweak hodnota
- */
-void calculate_sector_tweak(const uint8_t *initial_tweak,
-                            uint64_t sector_number, uint8_t *output_tweak);
+int process_sectors(
+    device_context_t *ctx,
+    uint8_t *key1,
+    uint8_t *key2,
+    uint64_t start_sector,
+    int encrypt,
+    int key_bits  
+);
 
-// Funkcie pre pracu s testovacimi vektormi
+void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *salt, uint8_t *verification_data);
+int write_header(device_context_t *ctx, const xts_header_t *header);
+int read_header(device_context_t *ctx, xts_header_t *header);
 
-/**
- * Nacita testovacie vektory zo suboru
- *
- * @param filename Nazov suboru s testovacimi vektormi
- * @param vectors Vystupne pole testovacich vektorov
- * @param count Vystupny pocet vektorov
- * @return 0 pri uspesnom nacitani, -1 pri chybe
- */
-int load_test_vectors(const char *filename, TestVector **vectors,
-                      int *count);
+#ifndef _WIN32
+int is_partition_mounted(const char *device_path);
+uint64_t get_partition_size(int fd);
+int aes_xts_crypt(EVP_CIPHER_CTX *ctx, const uint8_t *in, size_t in_len, uint8_t *out, int *out_len, uint8_t *tweak);
+#endif
 
-/**
- * Testuje nacitane vektory pre sifrovanie/desifrovanie
- *
- * @param vectors Pole testovacich vektorov
- * @param vector_count Pocet testovacich vektorov
- */
-void test_vectors(TestVector *vectors, int vector_count);
+#ifdef _WIN32
+BOOL is_admin(void);
+void unlock_disk(HANDLE hDevice);
+device_type_t get_device_type(const char *path);
+int32_t prepare_device_for_encryption(const char *device_path, HANDLE *pDevice);
+LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t deviceType);
+void check_volume(const char *path);
+#endif
 
-/**
- * Vypise data v hexadecimalnom formate
- *
- * @param label Popisok pre vystup
- * @param data Buffer s datami na vypis
- * @param len Dlzka dat
- */
-void print_hex_output(const char *label, const uint8_t *data,
-                      int len);
+int write_header_common(device_context_t *ctx, const xts_header_t *header);
+int read_header_common(device_context_t *ctx, xts_header_t *header);
 
-// Pomocne funkcie
-
-/**
- * Bezpecne nacita heslo od pouzivatela
- *
- * @param password Vystupny buffer pre heslo
- * @param len Dlzka vystupneho bufferu
- */
-void get_password(char *password, size_t len);
-
-/**
- * Pripoji priponu k nazvu suboru
- *
- * @param filename Povodny nazov suboru
- * @param extension Pripona na pridanie
- * @return Novy nazov suboru s priponou
- */
-char *append_extension(const char *filename, const char *extension);
-
-/**
- * Vytvori nazov desifrovaneho suboru
- *
- * @param filename Povodny nazov suboru
- * @return Novy nazov pre desifrovany subor
- */
-char *generate_decrypted_filename(const char *filename);
-
-/**
- * Spracuje subor pre sifrovanie alebo desifrovanie
- *
- * @param operation Operacia (sifrovanie/desifrovanie)
- * @param input_filename Nazov vstupneho suboru
- * @param password Heslo pre sifrovanie/desifrovanie
- * @param key_bits Velkost kluca v bitoch (128 alebo 256)
- *                 - 128-bit: potrebuje 32 bajtov (2x 16B kluc)
- *                 - 256-bit: potrebuje 64 bajtov (2x 32B kluc)
- */
-void process_file(const char *operation, const char *input_filename,
-                  const char *password, int key_bits);
-
-#endif  // AES_XTS_H
+#endif

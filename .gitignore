@@ -4,3 +4,5 @@ aes_xts
 *.o
 *~
 .vscode/
+disk.img
+create_partition.sh

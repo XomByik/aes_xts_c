@@ -1,50 +1,28 @@
-# Zakladne nastavenia
 CC = gcc
-CFLAGS = -Wall -Wextra -O2
+CFLAGS = -Wall -Wextra -O2 -fopenmp
+LDFLAGS = -lcrypto -lssl -fopenmp
 
-# Pre Windows: Cesty k OpenSSL a nastavenia
 ifeq ($(OS),Windows_NT)
-	OPENSSL_DIR = "C:/Program Files/OpenSSL-Win64"
-	CFLAGS += -I$(OPENSSL_DIR)/include -D_FORTIFY_SOURCE=0 -D_WIN32
-	# Upravene flags pre Windows
-	LDFLAGS = -L$(OPENSSL_DIR)/lib/VC/x64/MT -lssl -lcrypto -lws2_32 \
-				-static-libgcc -static-libstdc++ \
-				-Wl,-Bstatic -lstdc++ -lpthread \
-				-Wl,-Bdynamic
+	TARGET = aes_xts.exe
+	OBJS = aes_xts.o
+	OPENSSL_INCLUDE = "C:\Program Files\OpenSSL-Win64\include"
+	OPENSSL_LIBS = "C:\Program Files\OpenSSL-Win64\lib\VC\x64\MT"
+	CFLAGS += -I$(OPENSSL_INCLUDE)
+	LDFLAGS = -L$(OPENSSL_LIBS) -lssl -lcrypto -fopenmp
 else
-	# Pre Linux: Systemove cesty
-	LDFLAGS = -lssl -lcrypto
-	CFLAGS += -I/usr/include
+	TARGET = aes_xts
+	OBJS = aes_xts.o
 endif
 
-# Zdrojove subory
-SRC = aes_xts.c
-OBJ = $(SRC:.c=.o)
-EXECUTABLE = aes_xts
+.PHONY: all clean
 
-# Detekcia platformy
-ifeq ($(OS),Windows_NT)
-	EXECUTABLE := $(EXECUTABLE).exe
-	RM = del /Q
-else
-	RM = rm -f
-endif
+all: $(TARGET)
 
-# Hlavny ciel
-all: $(EXECUTABLE)
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
-# Linkovanie
-$(EXECUTABLE): $(OBJ)
-	$(CC) $(OBJ) -o $@ $(LDFLAGS)
-
-# Kompilacia
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Vycistenie
 clean:
-	$(RM) *.o
-	$(RM) $(EXECUTABLE)
-
-.PHONY: all clean
-	\end{lstlisting}
+	rm -f $(OBJS) $(TARGET)

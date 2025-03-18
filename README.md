@@ -11,15 +11,15 @@
 
 ## Základný prehľad
 
-Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov. Je vhodný pre:
+Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov a diskových oddielov. Je vhodný pre:
 - Zálohovanie citlivých dokumentov
-- Bezpečné ukladanie dát na externé médiá
-- Ochranu súborov pred neoprávneným prístupom
+- Bezpečné šifrovanie diskových oddielov a externých médií
+- Ochranu dát pred neoprávneným prístupom
 
 ### Hlavné výhody
 - Využíva moderný šifrovací algoritmus (AES-XTS s podporou 128-bitových a 256-bitových kľúčov)
 - Jednoduchý na použitie
-- Podporuje súbory akejkoľvek veľkosti
+- Podporuje šifrovanie celých diskových oddielov
 - Funguje na Windows aj Linux systémoch
 
 ### Použité technológie
@@ -27,7 +27,7 @@ Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov. Je vho
 1. **AES-XTS šifrovanie**
    - Využíva 128/256-bitové kľúče pre šifrovanie aj blokové úpravy
    - Celkový 256/512-bitový kľúč rozdelený na dve 128/256-bitové časti
-   - Špeciálne navrhnutý režim pre šifrovanie diskov, je však možné ho využiť aj na jednotlivé súbory
+   - Špeciálne navrhnutý režim pre šifrovanie diskov
    - Odolný voči manipulácii s dátami
    - Veľkosť blokov: 128-bitov
    - Implementovaný pomocou OpenSSL
@@ -72,37 +72,48 @@ sudo apt-get install openssl
 make
 ```
 
-### Šifrovanie súborov
-```bash
-./aes_xts encrypt 128 dokument.pdf obrazok.jpg    # Pre 128-bitové kľúče
-./aes_xts encrypt 256 dokument.pdf obrazok.jpg    # Pre 256-bitové kľúče
-```
-- Vytvorí súbory: dokument.pdf.enc, obrazok.jpg.enc
+### Windows použitie
+```powershell
+# Šifrovanie celých diskov
+aes_xts.exe encrypt 128 \\.\PhysicalDrive1    # Pre 128-bitové kľúče
+aes_xts.exe encrypt 256 \\.\PhysicalDrive1    # Pre 256-bitové kľúče
+aes_xts.exe encrypt \\.\PhysicalDrive1        # Pre predvolené 256-bitové kľúče
 
-### Dešifrovanie súborov
-```bash
-./aes_xts decrypt dokument.pdf.enc obrazok.jpg.enc
-```
-- Vytvorí súbory: dokument_dec.pdf, obrazok_dec.jpg
+# Šifrovanie partícií
+aes_xts.exe encrypt 256 \\.\E:               # Šifrovanie partície E:
 
-### Otestovanie vektorov
-```bash
-./aes_xts test test_vectors.txt
+# Dešifrovanie diskov
+aes_xts.exe decrypt \\.\PhysicalDrive1
+aes_xts.exe decrypt \\.\E:
 ```
+
+**Poznámka:** V systéme Windows je potrebné spustiť program s administrátorskými oprávneniami.
+
+### Linux použitie
+```bash
+./aes_xts encrypt 128 /dev/sdb1    # Pre 128-bitové kľúče
+./aes_xts encrypt 256 /dev/sdb1    # Pre 256-bitové kľúče
+./aes_xts encrypt /dev/sdb1        # Pre predvolené 256-bitové kľúče
+```
+
+### Dešifrovanie diskových oddielov
+```bash
+./aes_xts decrypt /dev/sdb1
+```
+
 ## Ako to funguje
 
 ### Proces šifrovania
 1. Zadanie vstupných parametrov:
    - Veľkosť kľúča (128 alebo 256 bitov)
-   - Názov súboru ktorý chceme zašifrovať
+   - Cesta k diskovému oddielu
    - Heslo od používateľa
    
-2. Príprava hlavičky súboru:
+2. Príprava hlavičky:
    - Vygenerovanie náhodnej 128-bitovej soli cez CSPRNG
-   - Vygenerovanie náhodnej 128-bitovej počiatočnej blokovej úpravy (počiatočného čísla
-     sektora) cez CSPRNG
-   - Uloženie salt a počiatočnej blokovej úpravy na začiatok súboru
-   - Tento prístup zabezpečuje, že súbor je možné rozšifrovať na rôznych miestach
+   - Vytvorenie verifikačných dát pre kontrolu správnosti hesla
+   - Uloženie hlavičky do sektora 62 (za MBR/GPT)
+   - Tento prístup zabezpečuje, že oddiel je možné rozšifrovať na rôznych systémoch
 
 3. Derivácia kľúčov:
    - Z hesla a salt sa pomocou Argon2id vytvorí šifrovací kľúč
@@ -111,27 +122,26 @@ make
    - Prvá polovica sa použije pre šifrovanie dát
    - Druhá polovica sa použije pre blokové úpravy
 
-4. Spracovanie súboru po sektoroch (512 bitov):
+4. Spracovanie oddielu po sektoroch (4096 bajtov):
    - Pre každý sektor sa vypočíta jedinečná bloková úprava
-   - Bloková úprava = počiatočná bloková úprava XOR číslo_sektora
-   - Číslo sektora je v našom prípade logická pozícia (posun pri prechádzaní) v súbore
+   - Preskočenie prvých 64 sektorov (rezervované pre MBR/GPT a hlavičku)
    - Šifrovanie dát v sektore pomocou AES-XTS s vypočítanou blokovou úpravou
 
 ### Proces dešifrovania
 1. Zadanie parametrov:
    - Heslo od používateľa
-   - Názov súboru ktorý chceme rozšifrovať
-   - Veľkosť kľúča (musí byť rovnaká ako pri šifrovaní)
+   - Cesta k zašifrovanému oddielu
 
-2. Čítanie hlavičky súboru:
-   - Načítanie 128-bitovej soli
-   - Načítanie 128-bitovej počiatočnej blokovej úpravy
+2. Čítanie hlavičky:
+   - Načítanie hlavičky zo sektora 62
+   - Extrakcia soli, veľkosti kľúča a ďalších parametrov
 
 3. Derivácia rovnakých kľúčov:
    - Použitie rovnakého hesla a načítaného salt
    - Vytvorenie rovnakých kľúčov ako pri šifrovaní
+   - Overenie správnosti hesla pomocou verifikačných dát
 
-4. Spracovanie súboru po sektoroch:
+4. Spracovanie oddielu po sektoroch:
    - Výpočet blokovej úpravy pre každý sektor rovnakým spôsobom
    - Dešifrovanie dát pomocou AES-XTS s patričnou blokovou úpravou
 
@@ -145,191 +155,125 @@ make
   - Každý sektor má unikátne šifrovanie
 
 ### Spracovanie sektorov
-- Veľkosť sektora: 512 bajtov (štandardná veľkosť)
+- Veľkosť sektora: 4096 bajtov
 - Číslovanie sektorov:
-  - Začíname od 0
+  - Začíname od rezervovanej oblasti (64 sektorov)
   - Každý sektor dostáva svoje poradové číslo
 - Bloková úprava pre sektor:
-  - Kombinácia počiatočnej blokovej úpravy a čísla sektora
+  - Kombinácia počiatočného IV a čísla sektora
   - Zabezpečuje unikátnosť šifrovania pre každý sektor
 
 ## Technická dokumentácia
 
 ### Implementované funkcie
 
-#### process_file
+#### aes_xts_crypt_sector
 ```c
-void process_file(const char *operation, const char *input_filename, const char *password)
+int32_t aes_xts_crypt_sector(const uint8_t *key1, const uint8_t *key2, uint64_t sector_num, uint8_t *data, size_t data_len, int encrypt, int key_bits)
 ```
-- **Účel**: Hlavná funkcia pre šifrovanie alebo dešifrovanie súboru
+- **Účel**: Vykonáva šifrovanie alebo dešifrovanie jedného sektora pomocou AES-XTS
 - **Parametre**:
-  - operation: "encrypt" alebo "decrypt"
-  - input_filename: cesta k vstupnému súboru
-  - password: používateľské heslo
+  - key1: prvá časť kľúča (pre šifrovanie dát)
+  - key2: druhá časť kľúča (pre blokové úpravy)
+  - sector_num: číslo sektora
+  - data: dáta na šifrovanie/dešifrovanie
+  - data_len: veľkosť dát
+  - encrypt: 1 pre šifrovanie, 0 pre dešifrovanie
+  - key_bits: veľkosť kľúča (128 alebo 256)
 - **Proces**:
-  1. Vytvorí výstupný názov súboru (.enc alebo _dec prípona)
-  2. Otvorí vstupný a výstupný súbor
-  3. Pri šifrovaní:
-     - Vygeneruje náhodný salt a blokovú úpravu
-     - Zapíše ich na začiatok výstupného súboru
-  4. Pri dešifrovaní:
-     - Načíta salt a blokovú úpravu zo začiatku súboru
-  5. Vygeneruje kľúč z hesla a salt pomocou Argon2
-  6. Inicializuje AES-XTS kontext s kľúčom a blokovou úpravou
-  7. Spracováva súbor po blokoch:
-     - Načíta blok dát
-     - Šifruje/dešifruje blok
-     - Zapíše výsledok
-  8. Vyčistí a uvoľní použité prostriedky
+  1. Vytvorí IV z čísla sektora
+  2. Inicializuje OpenSSL kontext pre AES-XTS
+  3. Vykoná šifrovanie alebo dešifrovanie podľa parametra encrypt
+  4. Vyčistí kontext a vráti výsledok
 
-#### derive_key_from_password
+#### derive_keys_from_password
 ```c
-int derive_key_from_password(const char *password, const unsigned char *salt, unsigned char *key, size_t key_length)
+int derive_keys_from_password(const char *password, const unsigned char *salt, size_t salt_len, unsigned char *key1, unsigned char *key2, int key_bits, uint32_t iterations, uint32_t memory_cost)
 ```
-- **Účel**: Generuje šifrovací kľúč z hesla pomocou Argon2
+- **Účel**: Generuje šifrovacie kľúče z hesla pomocou Argon2id
 - **Parametre**:
   - password: používateľské heslo
-  - salt: 16-bajtový salt
-  - key: buffer pre výstupný 64-bajtový kľúč
-  - key_length: dĺžka kľúča
+  - salt: salt pre deriváciu kľúča
+  - salt_len: dĺžka salt
+  - key1: buffer pre prvú časť kľúča
+  - key2: buffer pre druhú časť kľúča
+  - key_bits: veľkosť kľúča v bitoch (128 alebo 256)
+  - iterations: počet iterácií Argon2 algoritmu
+  - memory_cost: pamäťová náročnosť Argon2 algoritmu
 - **Proces**:
-  1. Inicializuje Argon2 s parametrami:
-     - t_cost = 3 (počet iterácií)
-     - m_cost = 65536 (64MB pamäte)
-     - parallelism = 4 (počet vlákien)
-  2. Nastaví používateľské heslo ako vstup
-  3. Pridá salt pre jedinečnosť
-  4. Spustí Argon2id algoritmus
-  5. Vygeneruje 32-bajtový kľúč
-  6. Vyčistí pamäť pre Argon2
-  7. Vráti výsledok operácie (0 = úspech)
+  1. Inicializuje Argon2id KDF v OpenSSL
+  2. Nastaví parametre pre deriváciu (iterácie, pamäť, paralelizmus)
+  3. Vytvorí kľúč z hesla a salt
+  4. Rozdelí výsledok na dve časti (key1 a key2)
+  5. Vráti výsledok operácie
 
-#### aes_xts_crypt
+#### process_sectors
 ```c
-int aes_xts_crypt(EVP_CIPHER_CTX *ctx, unsigned char *in, int in_len, unsigned char *out, int *out_len, unsigned char *tweak)
+int process_sectors(device_context_t *ctx, uint8_t *key1, uint8_t *key2, uint64_t start_sector, int encrypt, int key_bits)
 ```
-- **Účel**: Vykonáva XTS šifrovanie/dešifrovanie bloku dát
+- **Účel**: Spracováva sektory zariadenia (šifrovanie/dešifrovanie)
 - **Parametre**:
-  - ctx: OpenSSL kontext
-  - in: vstupné dáta
-  - in_len: dĺžka vstupných dát
-  - out: výstupný buffer
-  - out_len: dĺžka výstupných dát
-  - tweak: hodnota blokovej úpravy pre XTS
+  - ctx: kontext zariadenia
+  - key1: prvá časť kľúča
+  - key2: druhá časť kľúča
+  - start_sector: prvý sektor na spracovanie
+  - encrypt: 1 pre šifrovanie, 0 pre dešifrovanie
+  - key_bits: veľkosť kľúča v bitoch
 - **Proces**:
-  1. Nastaví blokovú úpravu pre aktuálny blok
-  2. Inicializuje šifrovanie/dešifrovanie s blokovou úpravou
-  3. Spracuje vstupné dáta:
-     - Rozdelí na 128-bitové bloky
-     - Aplikuje XTS na každý blok
-     - Spája zašifrované/dešifrované bloky
-  4. Aktualizuje dĺžku výstupných dát
-  5. Vráti stav operácie (1 = úspech)
+  1. Alokuje buffer pre efektívne spracovanie (8MB)
+  2. Nastaví pozíciu na začiatočný sektor
+  3. Číta dáta zo zariadenia po blokoch
+  4. Pre každý sektor v bloku:
+     - Volá aes_xts_encrypt_sector alebo aes_xts_decrypt_sector
+  5. Zapisuje spracované dáta späť na zariadenie
+  6. Zobrazuje priebeh operácie
+  7. Vyčistí a uvoľní použité prostriedky
 
-#### calculate_sector_tweak
+#### write_header / read_header
 ```c
-void calculate_sector_tweak(const unsigned char *initial_tweak, uint64_t sector_number, unsigned char *output_tweak)
+int write_header(device_context_t *ctx, const xts_header_t *header)
+int read_header(device_context_t *ctx, xts_header_t *header)
 ```
-- **Účel**: Vypočíta blokovú úpravu pre daný sektor
+- **Účel**: Zapisuje a číta hlavičku šifrovania z odddielu
 - **Parametre**:
-  - initial_tweak: počiatočná bloková úprava vygenerovaná CSPRNG (128 bitov)
-  - sector_number: logické číslo sektora (pozícia v súbore)
-  - output_tweak: výstupný buffer pre vypočítanú blokovú úpravu (128 bitov)
+  - ctx: kontext zariadenia
+  - header: štruktúra s hlavičkou
 - **Proces**:
-  1. Skopíruje počiatočnú blokovú úpravu do výstupného buffera
-  2. Aplikuje modifikáciu podľa čísla sektora:
-     - Upraví posledných 64 bitov blokovej úpravy
-     - Pripočíta číslo sektora k hodnote
-  3. Zabezpečí little-endian reprezentáciu
+  1. Alokuje buffer pre sektor
+  2. write_header:
+     - Inicializuje sektor s hlavičkou
+     - Zapisuje na pozíciu HEADER_SECTOR
+  3. read_header:
+     - Číta sektor z pozície HEADER_SECTOR
+     - Overí magic hodnotu "AESXTS"
+     - Naplní štruktúru s hlavičkou
+  4. Vyčistí a uvoľní použité prostriedky
 
-#### hex_to_bytes
+#### create_verification_data
 ```c
-int hex_to_bytes(const char *hex_str, unsigned char *bytes, size_t bytes_len)
+void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *salt, uint8_t *verification_data)
 ```
-- **Účel**: Konvertuje hexadecimálny reťazec na bajty
+- **Účel**: Vytvára verifikačné dáta pre overenie správnosti hesla
 - **Parametre**:
-  - hex_str: vstupný hex string
-  - bytes: výstupný buffer
-  - bytes_len: veľkosť buffera
+  - key: šifrovací kľúč
+  - key_bits: veľkosť kľúča v bitoch
+  - salt: salt použitý pri derivácii kľúča
+  - verification_data: výstupný buffer pre verifikačné dáta
 - **Proces**:
-  1. Kontroluje dĺžku vstupného reťazca
-  2. Pre každý pár znakov:
-     - Validuje, či sú hexadecimálne
-     - Konvertuje prvý znak na horné 4 bity
-     - Konvertuje druhý znak na dolné 4 bity
-     - Kombinuje bity do jedného bajtu
-  3. Ukladá výsledné bajty do buffera
-  4. Vracia počet spracovaných bajtov
+  1. Inicializuje HMAC s SHA256
+  2. Spracuje konštantný reťazec a salt
+  3. Vygeneruje 32 bajtov verifikačných dát
+  4. Vyčistí a uvoľní OpenSSL kontext
 
-#### print_hex_output
-```c
-void print_hex_output(const unsigned char *data, size_t len)
+### Formát hlavičky šifrovaného oddielu
 ```
-- **Účel**: Vypíše dáta v hexadecimálnom formáte
-- **Parametre**:
-  - data: dáta na vypísanie
-  - len: dĺžka dát
-- **Proces**:
-  1. Pre každý bajt dát:
-     - Konvertuje na dvojciferné hex číslo
-     - Pridá medzeru medzi bajtami
-  2. Po 16 bajtoch pridá nový riadok
-  3. Vypisuje formátovaný výstup na konzolu
-
-#### get_password
-```c
-char *get_password()
-```
-- **Účel**: Bezpečné načítanie hesla od používateľa
-- **Proces**:
-  1. Vypne echo terminálu
-  2. Zobrazí výzvu na zadanie hesla
-  3. Načíta heslo zo štandardného vstupu
-  4. Odstráni znak nového riadku
-  5. Zapne echo terminálu
-  6. Vráti načítané heslo
-
-#### append_extension / generate_decrypted_filename
-```c
-char *append_extension(const char *filename, const char *ext)
-char *generate_decrypted_filename(const char *encrypted_filename)
-```
-- **Účel**: Správa názvov súborov
-- **Proces**:
-  1. append_extension:
-     - Alokuje pamäť pre nový názov
-     - Skopíruje pôvodný názov
-     - Pridá požadovanú príponu
-  2. generate_decrypted_filename:
-     - Odstráni .enc príponu
-     - Vloží _dec pred pôvodnú príponu
-     - Vráti nový názov súboru
-
-#### load_test_vectors / test_vectors
-```c
-void load_test_vectors(const char *filename)
-int test_vectors(const char *test_file)
-```
-- **Účel**: Funkcie pre testovanie implementácie
-- **Proces**:
-  1. load_test_vectors:
-     - Otvorí súbor s testovacími vektormi
-     - Načíta vstupné dáta, kľúče a očakávané výstupy
-     - Spracuje formátovanie a validuje dáta
-  2. test_vectors:
-     - Načíta testovacie vektory
-     - Pre každý vektor:
-       * Inicializuje AES-XTS kontext
-       * Vykoná šifrovanie/dešifrovanie
-       * Porovná s očakávaným výsledkom
-     - Vypíše výsledky testov
-
-### Formát šifrovaného súboru
-```
-+---------------+-------------------+-------------------+
-| SALT          | Bloková úprava    | Šifrované dáta    |
-| (32 bajtov)   | (32 bajtov)       | (n-bajtov)        |
-+---------------+-------------------+-------------------+
++---------------+------------------+------------------+-----------------+
+| Magic (6B)    | Version (1B)     | Enc Type (1B)    | Start Sector    |
++---------------+------------------+------------------+-----------------+
+| Iterations    | Memory Cost      | Key Bits         | Salt (16B)      |
++---------------+------------------+------------------+-----------------+
+| Verification Data (32B)          | Padding          |                 |
++---------------+------------------+------------------+-----------------+
 ```
 
 ## Bezpečnostné informácie
@@ -354,15 +298,19 @@ int test_vectors(const char *test_file)
 
 ### Bezpečnostné vlastnosti programu
 1. **Ochrana proti útokom**
-   - Odolnosť voči brute-force útokom
-   - Ochrana proti rainbow table útokom
-   - Zabezpečenie proti útokom postranným kanálom
+   - Odolnosť voči brute-force útokom vďaka Argon2id
+   - Ochrana proti rainbow table útokom pomocou náhodného salt
+   - Verifikačné dáta pre kontrolu správnosti hesla
 
 2. **Kryptografická bezpečnosť**
    - 128/256-bitová bezpečnostná úroveň
-   - Jedinečný salt pre každý súbor
+   - Jedinečný salt pre každý oddiel
    - Jedinečná bloková úprava pre každý sektor
-   - Bezpečné mazanie pamäte
+   - Bezpečné mazanie pamäte po použití
+
+3. **Systémová integrácia**
+   - Preskakuje prvých 64 sektorov pre zachovanie MBR/GPT
+   - Hlavička v sektore 62 pre kompatibilitu s rôznymi systémami
 
 ## Odkazy na dokumentáciu
 

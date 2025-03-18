@@ -1,879 +1,1150 @@
-/***************************************************************************
- * Nazov projektu: AES-XTS Sifrovanie a Desifrovanie suborov pomocou
- *OpenSSL
- * ----------------------------------------------------------------------------
- * Subor: aes_xts.c
- * Verzia: 1.1.1
- * Datum: 30.1.2025
- *
- * Autor: Kamil Berecky
- *
- * Vyuzite zdroje:
- * - https://docs.openssl.org/3.3/man7/EVP_KDF-ARGON2/
- * - https://github.com/marianasamiranda/AES_XTS_OpenSSL_example
- * - https://github.com/mewmix/sm4-xts-openssl/blob/main/sm4_xts.c
- * - https://gist.github.com/ants/862cb941057bdb8db00c72711d2b826c
- * - https://gist.github.com/dvtalk/edca1d9753503cd03f04b495b040f0e3
- *
- * Popis:
- * Program implementuje sifrovanie a desifrovanie suborov pomocou
- *AES-128-XTS, AES-256-XTS. Vyuziva OpenSSL kniznicu pre kryptograficke
- *operacie a Argon2id pre bezpecne odvodenie kluca z hesla. Podporuje
- *spracovanie viacerych suborov naraz a testovanie pomocou standardnych
- *IEEE testovacich vektorov.
- *
- * Detaily implementacie:
- * - Sifrovaci algoritmus: AES-XTS (IEEE 1619-2007)
- * - Odvodenie kluca: Argon2id s nastavitelnou narocnostou
- * - Velkost bloku: 128 bitov
- * - Salt: 16 bajtov, nahodne generovany pre kazdy subor cez CSPRNG
- * - Pociatocny tweak: 128 bitov, nahodne generovany pre kazdy subor cez
- *CSPRNG
- * - Pamatova narocnost: 64MB pre Argon2id
- *
- * Pre viac info pozri README.md
- *************************************************************************/
-
 #include "aes_xts.h"
+#include <ctype.h>
+#ifndef min
+#define min(a,b) (((a) < (b)) ? (a) : (b))
+#endif
 
-/**
- * Makro pre kontrolu navratovych hodnot OpenSSL funkcii
- *
- * Pouzitie:
- * - Kontroluje uspesnost vykonania OpenSSL funkcii
- * - Pri chybe vypise informacie o subore a riadku
- * - Spusti handle_errors() pre detailny vypis chyby
- * - Vykona definovanu error_action
- *
- * Parametre:
- * @param call - Volanie OpenSSL funkcie na kontrolu
- * @param error_action - Akcia vykonana pri chybe
- */
-#define CHECK_OPENSSL_CALL(call, error_action)                         \
-    if (!(call)) {                                                     \
-        fprintf(stderr, "Chyba: %s, riadok %d\n", __FILE__, __LINE__); \
-        handle_errors();                                               \
-        error_action;                                                  \
+void aes_xts_init(void) {
+    OpenSSL_add_all_algorithms();
+    ERR_load_crypto_strings();
+}
+
+void aes_xts_cleanup(void) {
+    EVP_cleanup();
+    ERR_free_strings();
+}
+
+void print_openssl_error(void) {
+    uint8_t err_msg[1024];
+    uint32_t err = ERR_get_error();
+    
+    if(err != 0) {
+        ERR_error_string_n(err, (char*)err_msg, sizeof(err_msg));
+        fprintf(stderr, "OpenSSL Chyba: %s\n", err_msg);
     }
-
-/**
- * Spracovanie chybovych hlaseni z OpenSSL
- *
- * Popis:
- * Zachytava a spracovava vsetky chybove hlasky z OpenSSL kniznice.
- */
-void handle_errors(void) {
-    ERR_print_errors_fp(stderr);  // Vypis chybovych hlaseni na stderr
-    exit(EXIT_FAILURE);           // Ukoncenie programu s chybovym kodom
 }
 
-/**
- * Zobrazenie napovedy pre pouzivatela
- *
- * Vypise na standardny vystup:
- * 1. Zakladne pouzitie programu
- * 2. Dostupne operacie (sifrovanie, desifrovanie, testovanie)
- * 3. Format prikazov pre jednotlive operacie
- *
- * Priklad pouzitia:
- * - Pri spusteni bez parametrov
- * - Pri nespravnych parametroch
- * - Pri poziadavke na napovedu
- */
-void print_help() {
-    printf("Pouzitie: ./aes_xts [encrypt/decrypt/test] [128/256] [subory...]\n");
-    printf("Operacie:\n");
-    printf("  encrypt [subory...]  - Sifrovanie zadanych suborov\n");
-    printf("  decrypt [subory...]  - Desifrovanie zadanych suborov\n");
-    printf(
-        "  test [subor]         - Testovanie sifrovania s testovacimi "
-        "vektormi\n");
-    printf("Rezim :\n");
-    printf("  128 - Rychlejsi 128-bitovy rezim sifry AES\n");
-    printf("  256 - Najbezpecnejsi 256-bitovy rezim sifry AES\n");
+void show_progress(uint64_t current, uint64_t total, uint64_t sector_num) {
+    if (sector_num % 10000 == 0 || current >= total - SECTOR_SIZE) {
+        float progress = (float)current * 100.0f / (float)total;
+        if (progress > 100.0f) progress = 100.0f;
+        
+        #ifdef _WIN32
+        printf("Priebeh: %.1f%% (%llu/%llu MB)\r", 
+        #else
+        printf("Priebeh: %.1f%% (%lu/%lu MB)\r",
+        #endif
+               progress,
+               (current / (1024*1024)),
+               (total / (1024*1024)));
+        fflush(stdout);
+        
+        #ifdef _WIN32
+        Sleep(10);
+        #else
+        usleep(10000); 
+        #endif
+    }
 }
 
-/**
- * Implementacia sifrovania a desifrovania pomocou AES-XTS
- *
- * Postup spracovania:
- * 1. Inicializacia sifrovacieho algortimu s nahodne vygenerovanou tweak
- * hodnotou
- * 2. Sifrovanie/desifrovanie vstupnych dat
- * 3. Finalizacia operacie
- *
- * Bezpecnostne opatrenia:
- * - Kontrola navratovych hodnot vsetkych OpenSSL funkcii
- * - Pouzitie makra CHECK_OPENSSL_CALL pre jednotne spracovanie chyb
- * - Spravna inicializacia vystupnych premennych
- *
- * Parametre:
- * @param ctx      - Struktura s konfiguracnymi sifrovacimi parametrami
- * vyuzivana v OpenSSL ("tzv. context")
- * @param in       - Vstupne data - pri sifrovani plaintext, pri
- * desifrovani ciphertext
- * @param in_len   - Dlzka vstupnych dat
- * @param out      - Vystupne data pri desifrovani ciphertext, pri
- * desifrovani plaintext
- * @param out_len  - Dlzka vystupnych dat
- * @param tweak    - Tweak hodnota pre XTS mod
- *
- * @return 0 pri uspesnom dokonceni, -1 pri chybe
- */
-int aes_xts_crypt(EVP_CIPHER_CTX *ctx, uint8_t *in, int in_len,
-                  uint8_t *out, int *out_len, uint8_t *tweak) {
+int32_t aes_xts_crypt_sector(
+    const uint8_t *key1,
+    const uint8_t *key2,
+    uint64_t sector_num,
+    uint8_t *data,
+    size_t data_len,
+    int encrypt,
+    int key_bits 
+) {
+    EVP_CIPHER_CTX *ctx;
+    uint8_t iv[IV_SIZE] = {0};
     int len;
-    *out_len = 0;
-    // Volanie EVP_CipherInit_ex:
-    // - ctx: Struktura s konfiguracnymi sifrovacimi parametrami vyuzivana
-    // v OpenSSL ("tzv. context")
-    // - NULL: bez zmeny sifry
-    // - NULL: bez zmeny engine
-    // - NULL: bez zmeny kluca
-    // - tweak: tweak hodnota pre XTS mod
-    // - -1: zachovat smer sifrovania/de-sifrovania
-    CHECK_OPENSSL_CALL(EVP_CipherInit_ex(ctx, NULL, NULL, NULL, tweak, -1),
-                       return -1);
+    size_t key_size = key_bits / 8;
+    uint8_t combined_key[KEY_SIZE * 2]; 
+    const EVP_CIPHER *cipher;
+    
+    #ifdef _WIN32
+    uint64_t effective_sector = sector_num + RESERVED_SECTORS;
+    #else
+    uint64_t effective_sector = sector_num;
+    #endif
+    
+    *(uint64_t*)iv = effective_sector;
+    
+    memcpy(combined_key, key1, key_size);
+    memcpy(combined_key + key_size, key2, key_size);
 
-    // Volanie EVP_CipherUpdate pre sifrovanie/desifrovanie bloku dat:
-    // - ctx: Struktura s konfiguracnymi sifrovacimi parametrami vyuzivana
-    // v OpenSSL ("tzv. context")
-    // - out: Vystupne data pri desifrovani ciphertext, pri desifrovani
-    // plaintext
-    // - &len: Velkost vystupnych dat
-    // - in: Vstupne data - pri sifrovani plaintext, pri desifrovani
-    // ciphertext
-    // - in_len: Velkost nezasifrovanych dat
-    CHECK_OPENSSL_CALL(EVP_CipherUpdate(ctx, out, &len, in, in_len),
-                       return -1);
-    *out_len += len;
+    if (key_bits == 128) {
+        cipher = EVP_aes_128_xts();
+    } else {
+        cipher = EVP_aes_256_xts(); 
+    }
+    
+    if (!(ctx = EVP_CIPHER_CTX_new())) {
+        print_openssl_error();
+        return AES_XTS_ERROR_OPENSSL;
+    }
 
-    // Finalizacia sifrovania/desifrovania:
-    CHECK_OPENSSL_CALL(EVP_CipherFinal_ex(ctx, out + *out_len, &len),
-                       return -1);
-    *out_len += len;
-    return 0;
-}
-
-/**
- * Pridanie hexadecimalnych dat do dynamickeho pola
- *
- * Postup spracovania:
- * 1. Realokacia pamate pre nove data
- * 2. Konverzia hex retazca na bajty
- * 3. Pridanie novych dat na koniec pola
- *
- * Pouzitie:
- * - Pri nacitavani testovacich vektorov
- * - Pri spracovani plaintextu a ciphertextu
- *
- * Opatrenia:
- * - Kontrola uspesnosti alokacie
- * - Spravna aktualizacia dlzky pola
- *
- * @param current_data - Existujuce pole dat
- * @param current_len  - Aktualna dlzka pola
- * @param hex_str      - Novy hex retazec na pridanie
- * @param hex_len      - Dlzka noveho hex retazca
- *
- * @return Pointer na rozsirene pole alebo NULL pri chybe
- */
-uint8_t *append_data(uint8_t *current_data, int *current_len,
-                           const char *hex_str, int hex_len) {
-    uint8_t *new_data =
-        realloc(current_data, *current_len + hex_len);
-    hex_to_bytes(hex_str, new_data + *current_len, hex_len);
-    *current_len += hex_len;
-    return new_data;
-}
-
-/**
- * Nacitanie testovacich vektorov zo suboru
- *
- * Popis:
- * Nacita testovacie vektory z textoveho suboru pre AES-XTS testovanie.
- * Kazdy vektor obsahuje vstupne data, kluc, IV a ocakavany vystup.
- *
- * Format vstupneho suboru:
- * - Jeden testovaci vektor na blok
- * - Kazdy blok obsahuje:
- *   * KEY=<hex_string>    - Sifrovaci kluc
- *   * IV=<hex_string>     - Inicializacny vektor
- *   * PTX=<hex_string>     - Plaintext (vstupne data)
- *   * CTX=<hex_string>     - Ciphertext (ocakavany vystup)
- * - Prazdne riadky oddeluju jednotlive vektory
- *
- * Bezpecnostne kontroly:
- * - Overenie vstupneho formatu
- * - Kontrola dlzky vektorov
- * - Overenie alokacie pamate
- * - Spracovanie chyb pri citani
- *
- * Parametre:
- * @param filename - Cesta k suboru s testovacimi vektormi
- * @param vectors  - Vystupny parameter pre pole vektorov
- * @param count    - Vystupny parameter pre pocet vektorov
- *
- * Navratove hodnoty:
- * @return 0 - Uspesne nacitanie
- * @return -1 - Chyba pri citani alebo spracovani
- *
- * Pouzitie:
- * TestVector *vektory;
- * int pocet;
- * if(load_test_vectors("testy.txt", &vektory, &pocet) == 0) {
- *     // Spracovanie vektorov
- * }
- */
-int load_test_vectors(const char *filename, TestVector **vectors,
-                      int *count) {
-    FILE *file = fopen(filename, "r");
-    TestVector *temp_vectors = NULL;
-    int temp_count = 0;
-    TestVector current_vector = {0};
-    char line[MAX_LINE_LENGTH];
-    while (fgets(line, sizeof(line), file)) {
-        line[strcspn(line, "\r\n")] = 0;  // Odstranenie noveho riadku
-        if (strlen(line) == 0) {
-            // Ak je riadok prazdny, ulozit aktualny vektor
-            if (current_vector.plaintext_len > 0 &&
-                current_vector.ciphertext_len > 0) {
-                temp_vectors = realloc(
-                    temp_vectors, sizeof(TestVector) * (temp_count + 1));
-                if (!temp_vectors) {
-                    perror("Chyba pri alokacii pamate");
-                    fclose(file);
-                    return -1;
-                }
-                temp_vectors[temp_count++] = current_vector;
-                memset(&current_vector, 0, sizeof(TestVector));
-            }
-            continue;
+    if (encrypt) {
+        if (EVP_EncryptInit_ex(ctx, cipher, NULL, combined_key, iv) != 1 ||
+            EVP_EncryptUpdate(ctx, data, &len, data, data_len) != 1 ||
+            EVP_EncryptFinal_ex(ctx, data + len, &len) != 1) {
+            print_openssl_error();
+            EVP_CIPHER_CTX_free(ctx);
+            return AES_XTS_ERROR_OPENSSL;
         }
-        char *key = strtok(line, " ");
-        char *value = strtok(NULL, " ");
-        if (!key || !value) {
-            fprintf(stderr, "Neplatny format riadku: %s\n", line);
-            fclose(file);
-            return -1;
-        }
-        // Rozhodovanie podla typu udajov
-        if (strcmp(key, "Key1") == 0) {
-            hex_to_bytes(value, current_vector.key1, 16);
-        } else if (strcmp(key, "Key2") == 0) {
-            hex_to_bytes(value, current_vector.key2, 16);
-        } else if (strcmp(key, "DUCN") == 0) {
-            hex_to_bytes(value, current_vector.ducn, 16);
-        } else if (strcmp(key, "PTX") == 0) {
-            int len = strlen(value) / 2;
-            current_vector.plaintext =
-                append_data(current_vector.plaintext,
-                            &current_vector.plaintext_len, value, len);
-            if (!current_vector.plaintext) {
-                fclose(file);
-                return -1;
-            }
-        } else if (strcmp(key, "CTX") == 0) {
-            int len = strlen(value) / 2;
-            current_vector.ciphertext =
-                append_data(current_vector.ciphertext,
-                            &current_vector.ciphertext_len, value, len);
-            if (!current_vector.ciphertext) {
-                fclose(file);
-                return -1;
-            }
-        } else {
-            fprintf(stderr, "Neznamy parameter: %s\n", key);
-            fclose(file);
-            return -1;
+    } else {
+        if (EVP_DecryptInit_ex(ctx, cipher, NULL, combined_key, iv) != 1 ||
+            EVP_DecryptUpdate(ctx, data, &len, data, data_len) != 1 ||
+            EVP_DecryptFinal_ex(ctx, data + len, &len) != 1) {
+            print_openssl_error();
+            EVP_CIPHER_CTX_free(ctx);
+            return AES_XTS_ERROR_OPENSSL;
         }
     }
-    // Ulozenie posledneho vektora
-    if (current_vector.plaintext_len > 0 &&
-        current_vector.ciphertext_len > 0) {
-        temp_vectors =
-            realloc(temp_vectors, sizeof(TestVector) * (temp_count + 1));
-        temp_vectors[temp_count++] = current_vector;
-    }
-    fclose(file);
-    *vectors = temp_vectors;
-    *count = temp_count;
-    return 0;
+
+    EVP_CIPHER_CTX_free(ctx);
+    return AES_XTS_SUCCESS;
 }
 
-/**
- * Testovanie AES-XTS implementacie pomocou standardnych vektorov
- *
- * Popis:
- * Overuje spravnost implementacie AES-XTS sifrovania pomocou
- * predpripravenych testovacich vektorov. Kazdy vektor je samostatne
- * testovany na sifrovanie.
- *
- * Proces testovania:
- * 1. Inicializacia open-ssl implementacie XTS
- * 2. Nastavenie klucov a parametrov
- * 3. Sifrovanie vstupnych dat (plaintext)
- * 4. Porovnanie vysledku s ocakavanym ciphertextom
- * 5. Vypis vysledku testu
- *
- * Bezpecnostne kontroly:
- * - Overenie uspesnosti inicializacie OpenSSL XTS
- * - Kontrola navratovych hodnot OpenSSL funkcii
- * - Overenie dlzky vystupnych dat
- * - Bezpecne uvolnenie/vycistenie zdrojov
- *
- * Parametre:
- * @param vectors - Pole testovacich vektorov na overenie
- * @param vector_count - Pocet vektorov na testovanie
- *
- * Vystup:
- * - Vypis uspesnosti/zlyhania pre kazdy vektor
- *
- * Pouzitie pamate:
- * - Docasny buffer pre sifrovane data
- * - Automaticke vycistenie po dokonceni
- */
-void test_vectors(TestVector *vectors, int vector_count) {
-    for (int i = 0; i < vector_count; i++) {
-        EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-        if (!ctx) {
-            handle_errors();
-        }
-
-        // Volanie EVP_EncryptInit_ex:
-        // - ctx: Struktura s konfiguracnymi sifrovacimi parametrami
-        // vyuzivana v OpenSSL ("tzv. context")
-        // - EVP_aes_128_xts(): AES-128 v XTS mode
-        // - NULL: bez engine
-        // - vectors[i].key1: prvy kluc pre XTS
-        // - vectors[i].key2: druhy kluc pre XTS
-        if (EVP_EncryptInit_ex(ctx, EVP_aes_128_xts(), NULL,
-                               vectors[i].key1, vectors[i].key2) != 1) {
-            handle_errors();
-        }
-
-        uint8_t enc_out[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH];
-        int enc_out_len = 0;
-
-        aes_xts_crypt(ctx, vectors[i].plaintext, vectors[i].plaintext_len,
-                      enc_out, &enc_out_len, vectors[i].ducn);
-
-        if (enc_out_len != vectors[i].ciphertext_len ||
-            memcmp(enc_out, vectors[i].ciphertext, enc_out_len) != 0) {
-            fprintf(stderr, "Nesulad v sifrovani pri vektore %d\n", i + 1);
-        } else {
-            printf("Sifrovanie uspesne pre vektor %d\n", i + 1);
-        }
-
-        EVP_CIPHER_CTX_free(ctx);
-    }
+int32_t aes_xts_encrypt_sector(
+    const uint8_t *key1,
+    const uint8_t *key2,
+    uint64_t sector_num,
+    uint8_t *data,
+    size_t data_len,
+    int key_bits  
+) {
+    return aes_xts_crypt_sector(key1, key2, sector_num, data, data_len, 1, key_bits);
 }
 
-/**
- * Odvodenie sifrovacieho kluca z hesla pomocou Argon2id
- *
- * Implementuje bezpecne odvodenie kluca (KDF) s nasledujucimi
- * vlastnostami:
- * 1. Pouziva Argon2id
- * 2. Nastavenia odolnosti:
- *    - Pocet iteracii: 3 (kompromis medzi bezpecnostou a rychlostou)
- *    - Pamatova narocnost: 64MB (ochrana proti GPU utokom)
- *    - Paralelizmus: 4 lanes, 2 vlakna (optimalizacia pre bezne CPU)
- * 3. Vystupna velkost kluca:
- *    - Pre AES-128-XTS: 32 bajtov (2x 16B kluc)
- *    - Pre AES-256-XTS: 64 bajtov (2x 32B kluc)
- *
- * Pre viac informacii o parametroch a ich vplyve na bezpecnost
- * pozri sekciu "Bezpecnostne informacie" v README.md
- *
- * @param password Heslo zadane pouzivatelom
- * @param salt 16-bajtova nahodna hodnota
- * @param key Vystupny buffer pre kluc (32B pre AES-128-XTS, 64B pre
- * AES-256-XTS)
- * @param key_length Pozadovana dlzka kluca v bajtoch (32 pre 128-bit, 64
- * pre 256-bit)
- * @return 0 pri uspesnom odvodeni, -1 pri chybe
- */
-int derive_key_from_password(const char *password,
-                             const uint8_t *salt, uint8_t *key,
-                             size_t key_length) {
-    EVP_KDF *kdf = NULL;
-    EVP_KDF_CTX *kctx = NULL;
-    OSSL_PARAM params[8];
-    size_t out_len = key_length;
+int32_t aes_xts_decrypt_sector(
+    const uint8_t *key1,
+    const uint8_t *key2,
+    uint64_t sector_num,
+    uint8_t *data,
+    size_t data_len,
+    int key_bits  
+) {
+    return aes_xts_crypt_sector(key1, key2, sector_num, data, data_len, 0, key_bits);
+}
 
-    // Parametre pre Argon2id
-    uint32_t iterations = 3;
-    uint32_t memory_cost = 65536;
-    uint32_t lanes = 4;
-    uint32_t threads = 2;
-
-    // Nastavenie maximalneho poctu pouzitych vlakien pre KDF
-    OSSL_set_max_threads(NULL, threads);
-
-    // Konfiguracia parametrov pre KDF
-    OSSL_PARAM *p = params;
-    // Volanie OSSL_PARAM_construct_octet_string:
-    // - OSSL_KDF_PARAM_PASSWORD: parameter pre heslo
-    // - password: vstupne heslo
-    // - strlen(password): dlzka hesla
-    *p++ = OSSL_PARAM_construct_octet_string(
-        OSSL_KDF_PARAM_PASSWORD, (void *)password, strlen(password));
-    // Volanie OSSL_PARAM_construct_octet_string:
-    // - OSSL_KDF_PARAM_SALT: parameter pre sol
-    // - salt: nahodna hodnota soli
-    // - SALT_LENGTH: dlzka soli (16 bajtov)
-    *p++ = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT,
-                                             (void *)salt, SALT_LENGTH);
-    *p++ = OSSL_PARAM_construct_uint(OSSL_KDF_PARAM_ITER, &iterations);
-    *p++ = OSSL_PARAM_construct_uint(OSSL_KDF_PARAM_ARGON2_MEMCOST,
-                                     &memory_cost);
-    *p++ = OSSL_PARAM_construct_uint(OSSL_KDF_PARAM_ARGON2_LANES, &lanes);
-    *p++ = OSSL_PARAM_construct_uint(OSSL_KDF_PARAM_THREADS, &threads);
-    *p++ = OSSL_PARAM_construct_size_t(OSSL_KDF_PARAM_SIZE, &out_len);
-    *p++ = OSSL_PARAM_construct_end();
-
-    // Inicializacia KDF pre Argon2id
-    kdf = EVP_KDF_fetch(NULL, "Argon2id", NULL);
-
-    kctx = EVP_KDF_CTX_new(kdf);
-
-    // Odvodenie kluca
-    EVP_KDF_derive(kctx, key, out_len, params);
-
-    // Uvolnenie pamate
-    EVP_KDF_CTX_free(kctx);
+int derive_keys_from_password(
+    const char *password, 
+    const unsigned char *salt,
+    size_t salt_len,
+    unsigned char *key1, 
+    unsigned char *key2,
+    int key_bits, 
+    uint32_t iterations,
+    uint32_t memory_cost
+) {
+    size_t key_len = key_bits / 8;
+    unsigned char combined_key[KEY_SIZE_256 * 2];
+    
+    EVP_KDF *kdf = EVP_KDF_fetch(NULL, "ARGON2ID", NULL);
+    if (!kdf) {
+        fprintf(stderr, "Chyba: Argon2id nie je dostupny v tejto verzii OpenSSL\n");
+        print_openssl_error();
+        return AES_XTS_ERROR_OPENSSL;
+    }
+    
+    EVP_KDF_CTX *kctx = EVP_KDF_CTX_new(kdf);
     EVP_KDF_free(kdf);
-    OSSL_set_max_threads(NULL, 0);
-
-    return 0;  // Uspesne odvodenie kluca
+    
+    if (!kctx) {
+        print_openssl_error();
+        return AES_XTS_ERROR_OPENSSL;
+    }
+    
+    OSSL_PARAM params[6];
+    params[0] = OSSL_PARAM_construct_octet_string("pass", (void*)password, strlen(password));
+    params[1] = OSSL_PARAM_construct_octet_string("salt", (void*)salt, salt_len);
+    params[2] = OSSL_PARAM_construct_uint32("iterations", &iterations);
+    params[3] = OSSL_PARAM_construct_uint32("m_cost", &memory_cost);
+    params[4] = OSSL_PARAM_construct_uint32("parallelism", &(uint32_t){4}); 
+    params[5] = OSSL_PARAM_construct_end();
+    
+    if (EVP_KDF_derive(kctx, combined_key, key_len * 2, params) <= 0) {
+        print_openssl_error();
+        EVP_KDF_CTX_free(kctx);
+        return AES_XTS_ERROR_OPENSSL;
+    }
+    
+    EVP_KDF_CTX_free(kctx);
+    
+    memcpy(key1, combined_key, key_len);
+    memcpy(key2, combined_key + key_len, key_len);
+    
+    return AES_XTS_SUCCESS;
 }
 
-/**
- * Konverzia hexadecimalneho retazca na pole bajtov
- *
- * Popis:
- * Konvertuje hex string na bajty. Kazdy par znakov reprezentuje jeden
- * bajt.
- *
- * Bezpecnostne kontroly:
- * - Overenie dlzky vstupneho retazca
- * - Kontrola spravneho formatu hex znakov
- * - Ochrana proti preteceniu buffera
- *
- * Parametre:
- * @param hex_str - Vstupny hexadecimalny retazec
- * @param bytes - Vystupne pole bajtov
- * @param expected_len - Ocakavana dlzka vystupneho pola v bajtoch
- *
- * Navratove hodnoty:
- * @return expected_len - Pri uspesnej konverzii
- * @return -1 - Pri chybe (nespravna dlzka/format)
- */
-int hex_to_bytes(const char *hex_str, uint8_t *bytes,
-                 int expected_len) {
-    int len = strlen(hex_str);
-    if (len != expected_len * 2) {
-        return -1;  // Nespravna dlzka hex retazca
-    }
-    for (int i = 0; i < expected_len; i++) {
-        uint32_t temp;
-        if (sscanf(&hex_str[i * 2], "%2x", &temp) != 1) {
-            return -1;
+void read_password(char *password, size_t max_len, const char *prompt) {
+    printf("%s", prompt);
+    fflush(stdout);
+    
+    size_t i = 0;
+    int c;
+    
+    #ifdef _WIN32
+    HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    GetConsoleMode(hStdin, &mode);
+    SetConsoleMode(hStdin, mode & (~ENABLE_ECHO_INPUT));
+    
+    while (i < max_len - 1) {
+        c = _getch();
+        
+        if (c == '\r' || c == '\n') { 
+            break;
         }
-        bytes[i] = (uint8_t)temp;
-    }
-    return expected_len;
-}
-
-/**
- * Nacita heslo zo standardneho vstupu bez zobrazenia znakov
- *
- * @param password - Buffer pre heslo
- * @param len - Maximalna dlzka hesla
- */
-void get_password(char *password, size_t len) {
-    printf("Zadajte heslo: ");
-
-#ifdef _WIN32
-    SetConsoleCP(CP_UTF8);
-    SetConsoleOutputCP(CP_UTF8);
-    int i = 0;
-    char ch;
-    while ((ch = _getch()) != '\r' && (size_t)i < len - 1) {
-        if (ch == '\b' && i > 0) {
-            printf("\b \b");
+        else if (c == '\b' && i > 0) {
             i--;
-        } else if (ch != '\b') {
-            password[i++] = ch;
+            printf("\b \b"); 
+            fflush(stdout);
+        }
+        else if (c >= 32 && c <= 126) {
+            password[i++] = c;
             printf("*");
+            fflush(stdout);
         }
     }
-    password[i] = '\0';
-#else
+    
+    SetConsoleMode(hStdin, mode);
+    #else
     struct termios old_term, new_term;
     tcgetattr(STDIN_FILENO, &old_term);
     new_term = old_term;
-    new_term.c_lflag &= ~ECHO;
+    new_term.c_lflag &= ~(ECHO);
+    
     tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
-
-    if (fgets(password, len, stdin)) {
-        password[strcspn(password, "\n")] = '\0';
+    
+    while (i < max_len - 1) {
+        c = getchar();
+        
+        if (c == '\n' || c == EOF) {
+            break;
+        }
+        else if (c == 127 || c == '\b') { 
+            if (i > 0) {
+                i--;
+                printf("\b \b");
+                fflush(stdout);
+            }
+        }
+        else if (c >= 32 && c <= 126) { 
+            password[i++] = c;
+            printf("*");
+            fflush(stdout);
+        }
     }
-
+    
     tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
-#endif
+    #endif
+    
+    password[i] = '\0';
     printf("\n");
 }
 
-/**
- * Pripojenie pripony k nazvu suboru
- *
- * Popis:
- * Vytvara novy nazov suboru obsahujuci povodny nazov suboru s pridanou
- * priponou.
- *
- * Proces:
- * 1. Vypocet potrebnej velkosti pamate
- * 2. Alokacia noveho retazca
- * 3. Spojenie povodneho nazvu a pripony
- *
- * Bezpecnostne kontroly:
- * - Overenie vstupnych parametrov
- * - Ochrana proti preteceniu buffera pomocou snprintf
- *
- * Parametre:
- * @param filename - Povodny nazov suboru
- * @param extension - Pripona na pridanie (vratane bodky)
- *
- * Navratova hodnota:
- * @return Novy retazec s pripojenou priponou
- * @return NULL pri chybe alokacie
- */
-char *append_extension(const char *filename, const char *extension) {
-    size_t len = strlen(filename) + strlen(extension) + 1;
-    char *new_name = malloc(len);
-    // Volanie snprintf:
-    // - new_name: buffer pre novy nazov
-    // - len: maximalny pocet znakov
-    // - "%s%s": format string (spoji dva retazce)
-    // - filename: povodny nazov suboru
-    // - extension: pripona na pridanie
-    snprintf(new_name, len, "%s%s", filename, extension);
-    return new_name;
+int open_device(const char *path, device_context_t *ctx) {
+    #ifdef _WIN32
+    ctx->type = get_device_type(path);
+    
+    strncpy(ctx->path, path, MAX_PATH - 1);
+    ctx->path[MAX_PATH - 1] = '\0';
+    
+    check_volume(path);
+    
+    if (!prepare_device_for_encryption(path, &ctx->handle)) {
+        return 0;
+    }
+    ctx->size = get_device_size(ctx->handle, ctx->type);
+    return ctx->size.QuadPart != 0;
+    #else
+    if (is_partition_mounted(path)) {
+        fprintf(stderr, "Chyba: Oddiel %s je pripojeny. Odpojte ho pred operaciou.\n", path);
+        return 0;
+    }
+    
+    ctx->fd = open(path, O_RDWR);
+    if (ctx->fd < 0) {
+        perror("Chyba pri otvarani zariadenia");
+        return 0;
+    }
+    
+    ctx->size = get_partition_size(ctx->fd);
+    return ctx->size != 0;
+    #endif
 }
 
-/**
- * Generovanie nazvu desifrovaneho suboru
- *
- * Popis:
- * Vytvara novy nazov suboru pre desifrovany vystup pridanim '_dec' pred
- * priponu. Odstranuje '.enc' priponu z povodneho nazvu.
- *
- * Proces spracovania:
- * 1. Odstranenie '.enc' pripony
- * 2. Identifikacia povodnej pripony suboru
- * 3. Vlozenie '_dec' pred povodnu priponu
- * 4. Spojenie casti do vysledneho nazvu
- *
- * Bezpecnostne kontroly:
- * - Overenie vstupneho parametra
- * - Kontrola alokacie pamate
- * - Ochrana proti preteceniu buffra pomocou snprintf
- * - Spracovanie chybnych vstupov
- *
- * Parametre:
- * @param filename - Povodny nazov suboru s '.enc' priponou
- *
- * Navratove hodnoty:
- * @return Novy nazov suboru s '_dec' (treba uvolnit pomocou free())
- * @return NULL pri chybe
- *
- * Priklady:
- * "subor.txt.enc" -> "subor_dec.txt"
- * "dokument.pdf.enc" -> "dokument_dec.pdf"
- * "data.enc" -> "data_dec"
- */
-char *generate_decrypted_filename(const char *filename) {
-    const char *enc_ext = ".enc";
-    size_t filename_len = strlen(filename);
-    size_t enc_ext_len = strlen(enc_ext);
+void close_device(device_context_t *ctx) {
+    #ifdef _WIN32
+    if (ctx->handle != INVALID_HANDLE_VALUE) {
+        unlock_disk(ctx->handle);
+        CloseHandle(ctx->handle);
+        ctx->handle = INVALID_HANDLE_VALUE;
+    }
+    #else
+    if (ctx->fd >= 0) {
+        close(ctx->fd);
+        ctx->fd = -1;
+    }
+    #endif
+}
 
-    // Odstranenie .enc
-    size_t base_len = filename_len - enc_ext_len;
-    char *base_name = malloc(base_len + 1);
-    // Volanie strncpy:
-    // - base_name: cielovy buffer
-    // - filename: zdrojovy retazec
-    // - base_len: pocet kopirovanych znakov
-    strncpy(base_name, filename, base_len);
-    base_name[base_len] = '\0';
+int process_sectors(
+    device_context_t *ctx,
+    uint8_t *key1,
+    uint8_t *key2,
+    uint64_t start_sector,
+    int encrypt,
+    int key_bits  // Nový parametr
+) {
+    unsigned char *buffer = NULL;
+    uint64_t sector_num = 0;
+    uint64_t total_size = 0;
+    
+    #ifdef _WIN32
+    DWORD bytesRead, bytesWritten;
+    LARGE_INTEGER currentOffset, startOffset;
+    startOffset.QuadPart = (LONGLONG)start_sector * SECTOR_SIZE;
+    currentOffset.QuadPart = startOffset.QuadPart;
+    
+    buffer = (unsigned char *)_aligned_malloc(BUFFER_SIZE + SECTOR_SIZE, SECTOR_SIZE);
+    #else
+    ssize_t bytesRead, bytesWritten;
+    uint64_t currentOffset, startOffset;
+    startOffset = start_sector * SECTOR_SIZE;
+    currentOffset = startOffset;
+    
+    buffer = (unsigned char *)malloc(BUFFER_SIZE + SECTOR_SIZE);
+    #endif
+    
+    if (!buffer) {
+        fprintf(stderr, "Zlyhala alokacia pamate\n");
+        return AES_XTS_ERROR_IO;
+    }
+    
+    memset(buffer, 0, BUFFER_SIZE + SECTOR_SIZE);
+    
+    #ifdef _WIN32
+    if (!SetFilePointerEx(ctx->handle, startOffset, NULL, FILE_BEGIN)) {
+        fprintf(stderr, "Chyba pri nastaveni pozicie v subore: %lu\n", GetLastError());
+        _aligned_free(buffer);
+        return AES_XTS_ERROR_IO;
+    }
+    total_size = ctx->size.QuadPart - startOffset.QuadPart;
+    #else
+    if (lseek(ctx->fd, (off_t)startOffset, SEEK_SET) != (off_t)startOffset) {
+        perror("Chyba pri vyhladavani v zariadeni");
+        free(buffer);
+        return AES_XTS_ERROR_IO;
+    }
+    total_size = ctx->size - startOffset;
+    #endif
 
-    // Najdenie poslednej bodky v povodnom nazve suboru a pridanie _dec
-    // pred nu
-    char *dot = strrchr(base_name, '.');
-    if (dot) {
-        size_t name_before_dot_len = dot - base_name;
-        size_t new_name_len =
-            name_before_dot_len + strlen("_dec") + strlen(dot) + 1;
-        char *new_name = malloc(new_name_len);
-        strncpy(new_name, base_name, name_before_dot_len);
-        new_name[name_before_dot_len] = '\0';
-        strcat(new_name, "_dec");
-        strcat(new_name, dot);
-        free(base_name);
-        return new_name;
-    } else {
-        // Ak subor nema povodnu priponu, pridame _dec na koniec
-        size_t new_name_len = base_len + strlen("_dec") + 1;
-        char *new_name = malloc(new_name_len);
-        snprintf(new_name, new_name_len, "%s_dec", base_name);
-        free(base_name);
-        return new_name;
+    while (1) {
+        #ifdef _WIN32
+        if (currentOffset.QuadPart >= (LONGLONG)(startOffset.QuadPart + total_size))
+            break;
+            
+        DWORD bytesToProcess = min(BUFFER_SIZE, ctx->size.QuadPart - currentOffset.QuadPart);
+        DWORD bytesToRead = ((bytesToProcess + SECTOR_SIZE - 1) / SECTOR_SIZE) * SECTOR_SIZE;
+        bytesToRead = min(bytesToRead, BUFFER_SIZE);
+        
+        if (!ReadFile(ctx->handle, buffer, bytesToRead, &bytesRead, NULL)) {
+            DWORD error = GetLastError();
+            if (error == ERROR_HANDLE_EOF) break;
+            fprintf(stderr, "Chyba pri citani dat: %lu\n", error);
+            _aligned_free(buffer);
+            return AES_XTS_ERROR_IO;
+        }
+        #else
+        if (currentOffset >= total_size + startOffset)
+            break;
+            
+        size_t bytesToRead = BUFFER_SIZE;
+        if (currentOffset + bytesToRead > ctx->size) {
+            bytesToRead = ctx->size - currentOffset;
+        }
+        
+        bytesRead = read(ctx->fd, buffer, bytesToRead);
+        #endif
+        
+        if (bytesRead <= 0) break;
+        
+        size_t completeSectors = bytesRead / SECTOR_SIZE;
+        size_t remainderBytes = bytesRead % SECTOR_SIZE;
+        
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
+        for(size_t offset = 0; offset < completeSectors * SECTOR_SIZE; offset += SECTOR_SIZE) {
+            uint64_t current_sector = sector_num + (offset / SECTOR_SIZE);
+            if (encrypt)
+                aes_xts_encrypt_sector(key1, key2, current_sector, buffer + offset, SECTOR_SIZE, key_bits);
+            else
+                aes_xts_decrypt_sector(key1, key2, current_sector, buffer + offset, SECTOR_SIZE, key_bits);
+        }
+        
+        if (remainderBytes > 0) {
+            #ifdef _WIN32
+            uint8_t *lastSectorBuffer = (uint8_t*)_aligned_malloc(SECTOR_SIZE, SECTOR_SIZE);
+            #else
+            uint8_t *lastSectorBuffer = (uint8_t*)malloc(SECTOR_SIZE);
+            #endif
+            
+            if (lastSectorBuffer) {
+                memset(lastSectorBuffer, 0, SECTOR_SIZE);
+                memcpy(lastSectorBuffer, buffer + completeSectors * SECTOR_SIZE, remainderBytes);
+                
+                uint64_t last_sector = sector_num + completeSectors;
+                if (encrypt)
+                    aes_xts_encrypt_sector(key1, key2, last_sector, lastSectorBuffer, SECTOR_SIZE, key_bits);
+                else
+                    aes_xts_decrypt_sector(key1, key2, last_sector, lastSectorBuffer, SECTOR_SIZE, key_bits);
+                
+                memcpy(buffer + completeSectors * SECTOR_SIZE, lastSectorBuffer, remainderBytes);
+                
+                #ifdef _WIN32
+                _aligned_free(lastSectorBuffer);
+                #else
+                free(lastSectorBuffer);
+                #endif
+            }
+        }
+        
+        #ifdef _WIN32
+        if (!SetFilePointerEx(ctx->handle, currentOffset, NULL, FILE_BEGIN)) {
+            fprintf(stderr, "Chyba pri nastaveni pozicie pre zapis: %lu\n", GetLastError());
+            _aligned_free(buffer);
+            return AES_XTS_ERROR_IO;
+        }
+        #else
+        if (lseek(ctx->fd, (off_t)currentOffset, SEEK_SET) != (off_t)currentOffset) {
+            perror("Chyba pri vyhladavani pre zapis");
+            free(buffer);
+            return AES_XTS_ERROR_IO;
+        }
+        #endif
+        
+        size_t bytesToWrite = completeSectors * SECTOR_SIZE;
+        if (remainderBytes > 0) {
+            bytesToWrite += remainderBytes;
+        }
+        
+        #ifdef _WIN32
+        if (!WriteFile(ctx->handle, buffer, bytesToWrite, &bytesWritten, NULL) || 
+            bytesWritten != bytesToWrite) {
+            fprintf(stderr, "Chyba pri zapise dat: %lu\n", GetLastError());
+            _aligned_free(buffer);
+            return AES_XTS_ERROR_IO;
+        }
+        #else
+        bytesWritten = write(ctx->fd, buffer, bytesToWrite);
+        if ((size_t)bytesWritten != bytesToWrite) {
+            perror("Chyba pri zapise dat");
+            free(buffer);
+            return AES_XTS_ERROR_IO;
+        }
+        #endif
+        
+        // Update position trackers after processing a block
+        #ifdef _WIN32
+        currentOffset.QuadPart += bytesWritten;
+        #else
+        currentOffset += bytesWritten;
+        #endif
+
+        // Update sector number
+        sector_num += completeSectors;
+
+        #ifdef _WIN32
+        uint64_t progress = currentOffset.QuadPart - startOffset.QuadPart;
+        #else
+        uint64_t progress = currentOffset - startOffset;
+        #endif
+        show_progress(progress, total_size, sector_num);
+    }
+    
+    #ifdef _WIN32
+    _aligned_free(buffer);
+    #else
+    free(buffer);
+    #endif
+    
+    return AES_XTS_SUCCESS;
+}
+
+int write_header_common(device_context_t *ctx, const xts_header_t *header) {
+    unsigned char *sector = NULL;
+    int result = AES_XTS_ERROR_IO;
+    
+    #ifdef _WIN32
+    sector = (unsigned char *)_aligned_malloc(SECTOR_SIZE, SECTOR_SIZE);
+    #else
+    sector = (unsigned char *)malloc(SECTOR_SIZE);
+    #endif
+    
+    if (!sector) {
+        fprintf(stderr, "Zlyhala alokacia vyrovanavacej pamate pre hlavicku\n");
+        return AES_XTS_ERROR_IO;
+    }
+
+    memset(sector, 0, SECTOR_SIZE);
+    memcpy(sector, header, sizeof(xts_header_t));
+    
+    uint64_t offset = (uint64_t)HEADER_SECTOR * SECTOR_SIZE;
+
+    #ifdef _WIN32
+    LARGE_INTEGER li;
+    li.QuadPart = 0;
+    
+    if (!SetFilePointerEx(ctx->handle, li, NULL, FILE_BEGIN)) {
+        fprintf(stderr, "Zlyhalo nastavenie ukazatela suboru: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    li.QuadPart = offset;
+    if (!SetFilePointerEx(ctx->handle, li, NULL, FILE_BEGIN)) {
+        fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    DWORD bytesWritten;
+    if (!WriteFile(ctx->handle, sector, SECTOR_SIZE, &bytesWritten, NULL)) {
+        fprintf(stderr, "Zlyhalo zapisanie hlavicky: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    if (bytesWritten != SECTOR_SIZE) {
+        fprintf(stderr, "Zlyhalo zapisanie kompletnej hlavicky: %lu bajtov zapisanych\n", bytesWritten);
+        goto cleanup;
+    }
+
+    FlushFileBuffers(ctx->handle);
+    #else
+    if (lseek(ctx->fd, (off_t)offset, SEEK_SET) != (off_t)offset) {
+        fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky\n");
+        goto cleanup;
+    }
+
+    if (write(ctx->fd, sector, SECTOR_SIZE) != SECTOR_SIZE) {
+        fprintf(stderr, "Zlyhalo zapisanie hlavicky\n");
+        goto cleanup;
+    }
+
+    fsync(ctx->fd);
+    #endif
+
+    result = AES_XTS_SUCCESS;
+
+cleanup:
+    #ifdef _WIN32
+    SecureZeroMemory(sector, SECTOR_SIZE);
+    _aligned_free(sector);
+    #else
+    memset(sector, 0, SECTOR_SIZE);
+    free(sector);
+    #endif
+    
+    return result;
+}
+
+int read_header_common(device_context_t *ctx, xts_header_t *header) {
+    unsigned char *sector = NULL;
+    int result = AES_XTS_ERROR_IO;
+    uint64_t offset = (uint64_t)HEADER_SECTOR * SECTOR_SIZE;
+    
+    #ifdef _WIN32
+    DWORD bytesRead;
+    sector = (unsigned char *)_aligned_malloc(SECTOR_SIZE, SECTOR_SIZE);
+    #else
+    ssize_t bytesRead;
+    sector = (unsigned char *)malloc(SECTOR_SIZE);
+    #endif
+    
+    if (!sector) {
+        fprintf(stderr, "Zlyhala alokacia vyrovanavacej pamate pre hlavicku\n");
+        return AES_XTS_ERROR_IO;
+    }
+    
+    memset(sector, 0, SECTOR_SIZE);
+    
+    #ifdef _WIN32
+    LARGE_INTEGER zero = {0};
+    if (!SetFilePointerEx(ctx->handle, zero, NULL, FILE_BEGIN)) {
+        fprintf(stderr, "Zlyhalo nastavenie ukazatela suboru: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
+    if (!SetFilePointerEx(ctx->handle, li, NULL, FILE_BEGIN)) {
+        fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    if (!ReadFile(ctx->handle, sector, SECTOR_SIZE, &bytesRead, NULL)) {
+        fprintf(stderr, "Zlyhalo citanie hlavicky: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    #else
+    if (lseek(ctx->fd, (off_t)offset, SEEK_SET) != (off_t)offset) {
+        fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky\n");
+        goto cleanup;
+    }
+
+    bytesRead = read(ctx->fd, sector, SECTOR_SIZE);
+    #endif
+    
+    if (bytesRead != SECTOR_SIZE) {
+        fprintf(stderr, "Zlyhalo nacitanie kompletneho sektora hlavicky (%lu bajtov nacitanych)\n", 
+                (unsigned long)bytesRead);
+        goto cleanup;
+    }
+    
+    memcpy(header, sector, sizeof(xts_header_t));
+    
+    if (memcmp(header->magic, "AESXTS", 6) != 0) {
+        fprintf(stderr, "Neplatna magicka hodnota v hlavicke\n");
+        result = AES_XTS_ERROR_PARAM;
+        goto cleanup;
+    }
+    
+    result = AES_XTS_SUCCESS;
+    
+cleanup:
+    #ifdef _WIN32
+    SecureZeroMemory(sector, SECTOR_SIZE);
+    _aligned_free(sector);
+    #else
+    memset(sector, 0, SECTOR_SIZE);
+    free(sector);
+    #endif
+    
+    return result;
+}
+
+
+#ifdef _WIN32
+int write_header(device_context_t *ctx, const xts_header_t *header) {
+    unsigned char *sector = NULL;
+    int result = AES_XTS_ERROR_IO;
+    DWORD bytesWritten;
+    
+    LARGE_INTEGER offset;
+    offset.QuadPart = (LONGLONG)HEADER_SECTOR * SECTOR_SIZE;
+    
+    printf("Zapisovanie hlavicky do sektora %d\n", HEADER_SECTOR);
+    
+    sector = (unsigned char *)_aligned_malloc(SECTOR_SIZE, SECTOR_SIZE);
+    if (!sector) {
+        fprintf(stderr, "Zlyhala alokacia vyrovanavacej pamate pre hlavicku\n");
+        return AES_XTS_ERROR_MEMORY;
+    }
+    
+    memset(sector, 0, SECTOR_SIZE);
+    memcpy(sector, header, sizeof(xts_header_t));
+    printf("Zapisovanie hlavicky - magic: %.6s verzia: %u\n", 
+           header->magic, header->version);
+    
+    DWORD bytesReturned;
+    DeviceIoControl(ctx->handle, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    
+    if (SetFilePointer(ctx->handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+        fprintf(stderr, "Zlyhalo nastavenie ukazatela suboru\n");
+        goto cleanup;
+    }
+    
+    if (SetFilePointer(ctx->handle, (LONG)offset.QuadPart, 
+                       (PLONG)(&offset.HighPart), FILE_BEGIN) == INVALID_SET_FILE_POINTER && 
+        GetLastError() != NO_ERROR) {
+        fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    if (!WriteFile(ctx->handle, sector, SECTOR_SIZE, &bytesWritten, NULL)) {
+        fprintf(stderr, "Zlyhalo zapisanie hlavicky: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    if (bytesWritten != SECTOR_SIZE) {
+        fprintf(stderr, "Zlyhalo zapisanie kompletnej hlavicky (zapisanych %lu bajtov)\n", bytesWritten);
+        goto cleanup;
+    }
+    
+    FlushFileBuffers(ctx->handle);
+    result = AES_XTS_SUCCESS;
+    
+cleanup:
+    if (sector) {
+        SecureZeroMemory(sector, SECTOR_SIZE);
+        _aligned_free(sector);
+    }
+    return result;
+}
+
+int read_header(device_context_t *ctx, xts_header_t *header) {
+    unsigned char *sector = NULL;
+    int result = AES_XTS_ERROR_IO;
+    DWORD bytesRead;
+    
+    LARGE_INTEGER offset;
+    offset.QuadPart = (LONGLONG)HEADER_SECTOR * SECTOR_SIZE;
+    
+    printf("Citanie hlavicky zo sektora %d\n", HEADER_SECTOR);
+    
+    sector = (unsigned char *)_aligned_malloc(SECTOR_SIZE, SECTOR_SIZE);
+    if (!sector) {
+        fprintf(stderr, "Zlyhala alokacia vyrovanavacej pamate pre hlavicku\n");
+        return AES_XTS_ERROR_MEMORY;
+    }
+    
+    memset(sector, 0, SECTOR_SIZE);
+    
+    if (SetFilePointer(ctx->handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+        fprintf(stderr, "Zlyhalo nastavenie ukazatela suboru\n");
+        goto cleanup;
+    }
+    
+    if (SetFilePointer(ctx->handle, (LONG)offset.QuadPart, 
+                       (PLONG)(&offset.HighPart), FILE_BEGIN) == INVALID_SET_FILE_POINTER && 
+        GetLastError() != NO_ERROR) {
+        fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    if (!ReadFile(ctx->handle, sector, SECTOR_SIZE, &bytesRead, NULL)) {
+        fprintf(stderr, "Zlyhalo citanie hlavicky: %lu\n", GetLastError());
+        goto cleanup;
+    }
+    
+    if (bytesRead != SECTOR_SIZE) {
+        fprintf(stderr, "Zlyhalo nacitanie kompletnej hlavicky (nacitanych %lu bajtov)\n", bytesRead);
+        goto cleanup;
+    }
+    
+    memcpy(header, sector, sizeof(xts_header_t));
+    
+    if (memcmp(header->magic, "AESXTS", 6) != 0) {
+        fprintf(stderr, "Neplatna magicka hodnota v hlavicke\n");
+        result = AES_XTS_ERROR_PARAM;
+        goto cleanup;
+    }
+    
+    result = AES_XTS_SUCCESS;
+    
+cleanup:
+    if (sector) {
+        SecureZeroMemory(sector, SECTOR_SIZE);
+        _aligned_free(sector);
+    }
+    return result;
+}
+
+BOOL is_admin(void) {
+    BOOL isAdmin = FALSE;
+    SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
+    PSID AdminGroup;
+    
+    if (AllocateAndInitializeSid(&NtAuthority, 2,
+                               SECURITY_BUILTIN_DOMAIN_RID,
+                               DOMAIN_ALIAS_RID_ADMINS,
+                               0, 0, 0, 0, 0, 0,
+                               &AdminGroup)) {
+        CheckTokenMembership(NULL, AdminGroup, &isAdmin);
+        FreeSid(AdminGroup);
+    }
+    return isAdmin;
+}
+
+device_type_t get_device_type(const char *path) {
+    return (strncmp(path, "\\\\.\\PhysicalDrive", 17) == 0) ? 
+            DEVICE_TYPE_DISK : DEVICE_TYPE_VOLUME;
+}
+
+BOOL lock_and_dismount(HANDLE hDevice) {
+    DWORD bytesReturned;
+    
+    DeviceIoControl(hDevice, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    
+    BOOL result = DeviceIoControl(hDevice, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    
+    if (!result)
+        fprintf(stderr, "Upozornenie: Nepodarilo sa odpojit zvazok: %lu\n", GetLastError());
+        
+    return result;
+}
+
+void unlock_disk(HANDLE hDevice) {
+    if (hDevice != INVALID_HANDLE_VALUE) {
+        DWORD bytesReturned;
+        DeviceIoControl(hDevice, FSCTL_UNLOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
     }
 }
 
-/**
- * Vypocet tweak hodnoty pre konkretny sektor
- *
- * Popis:
- * Vypocitava jedinecnu tweak hodnotu pre kazdy sektor v subore pomocou
- * XOR medzi pociatocnym tweakom a logickou poziciou sektora.
- *
- * Proces:
- * 1. Skopirovanie pociatocneho tweaku do vystupneho buffera
- * 2. XOR logickej pozicie sektora s tweakom
- *
- * Bezpecnostne vlastnosti:
- * - Kazdy sektor ma unikatny tweak
- * - Zachovava kryptograficku silu povodneho tweaku
- * - Predvidatelna zmena tweaku pre postupne sektory
- *
- * Parametre:
- * @param initial_tweak - Pociatocny 128-bitovy tweak
- * @param sector_number - Logicke cislo sektora (pocitane od 0)
- * @param output_tweak - Vystupny buffer pre vypocitany tweak (128 bitov)
- *
- * Pouzitie:
- * uint8_t tweak[16];
- * calculate_sector_tweak(initial_tweak, 0, tweak);
- */
-void calculate_sector_tweak(const uint8_t *initial_tweak,
-                            uint64_t sector_number,
-                            uint8_t *output_tweak) {
-    // Skopirovanie pociatocneho tweaku (128 bitov)
-    memcpy(output_tweak, initial_tweak, TWEAK_LENGTH);
-    // XOR celych 128 bitov po dvoch 64-bitovych castiach
-    for (int i = 0; i < TWEAK_LENGTH; i += 8) {
-        uint64_t *chunk = (uint64_t *)(output_tweak + i);
-        *chunk ^= sector_number;
+void check_volume(const char *path) {
+    if (path[0] == '\\' && path[1] == '\\' && path[2] == '.' && path[3] == '\\' && isalpha(path[4])) {
+        char drive[3] = { path[4], ':', 0 };
+        printf("Priprava jednotky %s na pristup\n", drive);
     }
 }
 
-/**
- * Spracovanie suboru pre sifrovanie alebo desifrovanie
- *
- * Popis:
- * Implementuje sifrovanie/desifrovanie suboru po sektoroch s pouzitim
- * AES-XTS algoritmu (128-bit alebo 256-bit verzia). Kazdy sektor ma
- * vlastny tweak odvodeny z pociatocneho tweaku a cisla sektora.
- *
- * Podporovane velkosti klucov:
- * - AES-128-XTS: 32 bajtov (2x 16B kluc)
- * - AES-256-XTS: 64 bajtov (2x 32B kluc)
- *
- * Parametre:
- * @param operation - "encrypt" alebo "decrypt"
- * @param input_filename - Cesta k vstupnemu suboru
- * @param password - Heslo pre sifrovanie/desifrovanie
- * @param key_bits - Velkost kluca v bitoch (128 alebo 256)
- */
-void process_file(const char *operation, const char *input_filename,
-                  const char *password, int key_bits) {
-    uint8_t salt[SALT_LENGTH];
-    uint8_t initial_tweak[TWEAK_LENGTH];
-    uint8_t sector_tweak[TWEAK_LENGTH];
-    // Alokacia kluca podla zvolenej velkosti
-    uint8_t
-        key[key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128];
-    uint8_t *key1 = key;
-    uint8_t *key2 =
-        key + (key_bits / 8);  // Polovica celkovej dlzky kluca
-    uint8_t in_buf[SECTOR_SIZE];
-    uint8_t out_buf[SECTOR_SIZE + EVP_MAX_BLOCK_LENGTH];
-    int in_len, out_len;
-    uint64_t sector_number = 0;
-    char *output_filename = NULL;
-    // Vytvorenie nazvu vystupneho suboru
-    if (strcmp(operation, "encrypt") == 0) {
-        output_filename = append_extension(input_filename, ".enc");
+// Get device size 
+LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
+    LARGE_INTEGER size = {0};
+    DWORD bytesReturned;
+    
+    // Try IOCTL method first for both types
+    if (type == DEVICE_TYPE_VOLUME) {
+        GET_LENGTH_INFORMATION lengthInfo;
+        if (DeviceIoControl(hDevice, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0,
+                          &lengthInfo, sizeof(lengthInfo), &bytesReturned, NULL)) {
+            size.QuadPart = lengthInfo.Length.QuadPart;
+            printf("Velkost zariadenia z IOCTL: %lld bajtov\n", size.QuadPart);
+            return size;
+        }
     } else {
-        output_filename = generate_decrypted_filename(input_filename);
-    }
-    // Otvorenie suborov
-    FILE *infile = fopen(input_filename, "rb");
-    FILE *outfile = fopen(output_filename, "wb");
-    if (!infile || !outfile) {
-        return;
+        DISK_GEOMETRY_EX diskGeometry;
+        if (DeviceIoControl(hDevice, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0,
+                          &diskGeometry, sizeof(diskGeometry), &bytesReturned, NULL)) {
+            size.QuadPart = diskGeometry.DiskSize.QuadPart;
+            printf("Velkost zariadenia z IOCTL: %lld bajtov\n", size.QuadPart);
+            return size;
+        }
     }
 
-    if (strcmp(operation, "encrypt") == 0) {
-        // Generovanie soli a pociatocneho tweaku
-        if (!RAND_bytes(salt, SALT_LENGTH) ||
-            !RAND_bytes(initial_tweak, TWEAK_LENGTH)) {
-            return;
+    LARGE_INTEGER zero = {0};
+    if (SetFilePointerEx(hDevice, zero, &size, FILE_END)) {
+        printf("Velkost zariadenia z vyhladavania: %lld bajtov\n", size.QuadPart);
+        // Go back to start
+        SetFilePointerEx(hDevice, zero, NULL, FILE_BEGIN);
+        return size;
+    }
+    
+    fprintf(stderr, "Zlyhalo zistenie velkosti zariadenia: %lu\n", GetLastError());
+    return size;
+}
+
+int prepare_device_for_encryption(const char *path, HANDLE *handle) {
+    if (!is_admin()) {
+        fprintf(stderr, "Chyba: Vyzaduju sa administratorske opravnenia\n");
+        return 0;
+    }
+    
+    check_volume(path);
+    
+    *handle = CreateFileA(
+        path,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        0,
+        NULL
+    );
+    
+    printf("Pokus o otvorenie v standardnom rezime zdielania...\n");
+    
+    if (*handle == INVALID_HANDLE_VALUE) {
+        printf("Pokus o otvorenie s exkluzivnym pristupom...\n");
+        *handle = CreateFileA(
+            path,
+            GENERIC_READ | GENERIC_WRITE,
+            0,  // No sharing
+            NULL,
+            OPEN_EXISTING,
+            FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
+            NULL
+        );
+    }
+    
+    if (*handle == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "Zlyhalo otvorenie zariadenia: %lu\n", GetLastError());
+        return 0;
+    }
+    
+    printf("Zariadenie uspesne otvorene pomocou %s\n", 
+           (*handle != INVALID_HANDLE_VALUE) ? "standardneho rezimu zdielania" : "exkluzivneho pristupu");
+    
+    printf("Pokus o odpojenie zvazku...\n");
+    if (lock_and_dismount(*handle)) {
+        printf("Zvazok uspesne odpojeny\n");
+    }
+    
+    DWORD bytesReturned;
+    DeviceIoControl(*handle, FSCTL_ALLOW_EXTENDED_DASD_IO, 
+                  NULL, 0, NULL, 0, &bytesReturned, NULL);
+    
+    BYTE testBuffer[SECTOR_SIZE];
+    DWORD bytesRead;
+    if (ReadFile(*handle, testBuffer, SECTOR_SIZE, &bytesRead, NULL)) {
+        printf("Uspesne nacitanych %lu bajtov zo zariadenia\n", bytesRead);
+        SetFilePointer(*handle, 0, NULL, FILE_BEGIN);
+    }
+    
+    return (*handle != INVALID_HANDLE_VALUE);
+}
+#else
+int write_header(device_context_t *ctx, const xts_header_t *header) {
+    return write_header_common(ctx, header);
+}
+
+int read_header(device_context_t *ctx, xts_header_t *header) {
+    return read_header_common(ctx, header);
+}
+#endif
+
+int process_user_confirmation(const char *device_path, int key_bits) {
+    printf("UPOZORNENIE: Vsetky data na zariadeni %s budu zasifrovane s %d-bitovym klucom!\n", 
+           device_path, key_bits);
+    
+    printf("Chcete pokracovat? (a/n): ");
+    
+    char confirm;
+    if (scanf(" %c", &confirm) != 1) {
+        fprintf(stderr, "Chyba pri citani potvrdenia\n");
+        return 0;
+    }
+    
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+    
+    return (confirm == 'a' || confirm == 'A' || confirm == 'y' || confirm == 'Y');
+}
+
+int process_password_input(char *password, size_t password_size, int verify) {
+    read_password(password, password_size, "Zadajte heslo: ");
+    
+    if (strlen(password) < 8) {
+        fprintf(stderr, "Heslo musi mat aspon 8 znakov\n");
+        return 0;
+    }
+    
+    if (verify) {
+        char confirm_password[128];
+        read_password(confirm_password, sizeof(confirm_password), "Potvrdte heslo: ");
+        
+        if (strcmp(password, confirm_password) != 0) {
+            fprintf(stderr, "Hesla sa nezhoduju\n");
+            return 0;
         }
-        // Zapis hlavicky (sol + pociatocny tweak)
-        if (fwrite(salt, 1, SALT_LENGTH, outfile) != SALT_LENGTH ||
-            fwrite(initial_tweak, 1, TWEAK_LENGTH, outfile) !=
-                TWEAK_LENGTH) {
-            return;
-        }
-    } else {
-        // Citanie hlavicky pri desifrovani
-        if (fread(salt, 1, SALT_LENGTH, infile) != SALT_LENGTH ||
-            fread(initial_tweak, 1, TWEAK_LENGTH, infile) !=
-                TWEAK_LENGTH) {
-            return;
-        }
     }
-    // Odvodenie kluca z hesla
-    if (derive_key_from_password(
-            password, salt, key,
-            key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128) !=
-        0) {
-        return;
-    }
-    // Inicializacia sifrovania
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
-        return;
-    }
-    // Vyber spravneho modu podla velkosti kluca
-    const EVP_CIPHER *cipher =
-        (key_bits == 256) ? EVP_aes_256_xts() : EVP_aes_128_xts();
-    // Nastavenie modu podla operacie
-    if (strcmp(operation, "encrypt") == 0) {
-        EVP_EncryptInit_ex(ctx, cipher, NULL, key1, key2);
-    } else {
-        EVP_DecryptInit_ex(ctx, cipher, NULL, key1, key2);
-    }
-    // Spracovanie po sektoroch
-    while ((in_len = fread(in_buf, 1, SECTOR_SIZE, infile)) > 0) {
-        // Vypocet tweaku pre aktualny sektor
-        calculate_sector_tweak(initial_tweak, sector_number, sector_tweak);
-        // Sifrovanie/desifrovanie sektora
-        if (aes_xts_crypt(ctx, in_buf, in_len, out_buf, &out_len,
-                          sector_tweak) != 0) {
+    
+    return 1;
+}
+
+void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *salt, uint8_t *verification_data) {
+    EVP_MAC *hmac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+    EVP_MAC_CTX *hmac_ctx = EVP_MAC_CTX_new(hmac);
+
+    OSSL_PARAM params[2];
+    char md_name[] = "SHA256";
+    params[0] = OSSL_PARAM_construct_utf8_string("digest", md_name, strlen(md_name));
+    params[1] = OSSL_PARAM_construct_end();
+
+    size_t hmac_key_len = key_bits == 256 ? 32 : 16;
+    EVP_MAC_init(hmac_ctx, key, hmac_key_len, params);
+
+    const char *verify_str = "AES-XTS-VERIFY";
+    EVP_MAC_update(hmac_ctx, (uint8_t *)verify_str, strlen(verify_str));
+    EVP_MAC_update(hmac_ctx, salt, SALT_LENGTH);
+
+    size_t out_len = 32;
+    EVP_MAC_final(hmac_ctx, verification_data, &out_len, 32);
+
+    EVP_MAC_CTX_free(hmac_ctx);
+    EVP_MAC_free(hmac);
+}
+
+#ifndef _WIN32
+
+int is_partition_mounted(const char *device_path) {
+    FILE *mtab = fopen("/proc/mounts", "r");
+    if (!mtab) return 0;
+
+    char line[1024];
+    int mounted = 0;
+
+    while (fgets(line, sizeof(line), mtab)) {
+        if (strstr(line, device_path)) {
+            mounted = 1;
             break;
         }
-        // Zapis vystupu
-        if (fwrite(out_buf, 1, out_len, outfile) != (size_t)out_len) {
-            break;
-        }
-        sector_number++;
     }
-    // Finalizacia
-    if (strcmp(operation, "encrypt") == 0) {
-        EVP_EncryptFinal_ex(ctx, out_buf, &out_len);
-    } else {
-        EVP_DecryptFinal_ex(ctx, out_buf, &out_len);
-    }
-    // Cistenie
-    EVP_CIPHER_CTX_free(ctx);
-    fclose(infile);
-    fclose(outfile);
-    free(output_filename);
+
+    fclose(mtab);
+    return mounted;
 }
+
+uint64_t get_partition_size(int fd) {
+    uint64_t size = 0;
+
+    if (ioctl(fd, BLKGETSIZE64, &size) != 0) {
+        perror("Chyba pri zistovani velkosti oddielu");
+        return 0;
+    }
+
+    return size;
+}
+
+
+#endif
 
 int main(int argc, char *argv[]) {
-    // Vypis verzie a napovedy ak nie su zadane argumenty
-    if (argc < 2) {
-        printf("AES-XTS sifrovanie a desifrovanie suborov pomocou OpenSSL\n");
-        printf("Verzia: 1.1.0\n");
-        printf("Datum: 30.1.2025\n\n");
-        print_help();
+    int result = 0;
+    char password[128];
+    device_context_t ctx = {0};
+    int key_bits = 256; 
+    
+    if (argc < 3) {
+        printf("AES-XTS Nastroj na sifrovanie diskov/oddielov\n");
+        printf("=========================================\n\n");
+        printf("Pouzitie:\n");
+        printf("  %s encrypt [128|256] <zariadenie>\n", argv[0]);
+        printf("  %s decrypt [128|256] <zariadenie>\n", argv[0]);
+        printf("\nPriklady:\n");
+        printf("  %s encrypt 128 /dev/sdb1     # Sifrovanie s 128-bitovym klucom\n", argv[0]);
+        printf("  %s encrypt 256 /dev/sdb1     # Sifrovanie s 256-bitovym klucom\n", argv[0]);
+        printf("  %s encrypt /dev/sdb1         # Sifrovanie s predvolenou velkostou kluca (256-bit)\n", argv[0]);
+        printf("  %s decrypt /dev/sdb1         # Desifrovanie (velkost kluca je nacitana z hlavicky)\n", argv[0]);
         return 1;
     }
 
+    aes_xts_init();
+    
     const char *operation = argv[1];
+    const char *device_path = NULL;
+    
+    if (argc >= 4 && (strcmp(argv[2], "128") == 0 || strcmp(argv[2], "256") == 0)) {
+        key_bits = atoi(argv[2]);
+        device_path = argv[3];
+    } else if (argc >= 3) {
+        device_path = argv[2];
+    }
 
-    // Kontrola typu operacie
-    if (strcmp(operation, "encrypt") != 0 && 
-        strcmp(operation, "decrypt") != 0 && 
-        strcmp(operation, "test") != 0) {
-        print_help();
+    if (!device_path) {
+        fprintf(stderr, "Chyba: Nie je zadana cesta k zariadeniu\n");
+        printf("Pouzite %s pre napovedu\n", argv[0]);
+        aes_xts_cleanup();
         return 1;
     }
 
-    // Pre sifrovanie a desifrovanie potrebujeme aspon 4 argumenty:
-    // program encrypt/decrypt 128/256 subor
-    if ((strcmp(operation, "encrypt") == 0 || strcmp(operation, "decrypt") == 0) 
-        && argc < 4) {
-        printf("Nedostatocny pocet argumentov pre %s\n", operation);
-        print_help();
+    if (strcmp(operation, "encrypt") == 0) {
+        printf("Pouziva sa %d-bitove sifrovanie\n", key_bits);
+    }
+    
+    uint8_t key1[KEY_SIZE], key2[KEY_SIZE];
+    xts_header_t header;
+
+    if (!open_device(device_path, &ctx)) {
+        fprintf(stderr, "Zlyhalo otvorenie zariadenia\n");
+        aes_xts_cleanup();
         return 1;
     }
 
-    if (strcmp(argv[1], "encrypt") != 0 && 
-        strcmp(argv[1], "decrypt") != 0 && 
-        strcmp(argv[1], "test") != 0) {
-        print_help();
-        return 1;
-    }
-
-    // Spracovanie testovacieho modu
-    if (strcmp(operation, "test") == 0) {
-        // Kontrola spravneho poctu argumentov pre testovaci mod
-        if (argc != 3) {
-            print_help();
+    if (strcmp(operation, "encrypt") == 0) {
+        if (!process_user_confirmation(device_path, key_bits)) {
+            printf("Sifrovanie zrusene.\n");
+            close_device(&ctx);
+            aes_xts_cleanup();
+            return 0;
+        }
+        
+        if (!process_password_input(password, sizeof(password), 1)) {
+            close_device(&ctx);
+            aes_xts_cleanup();
             return 1;
         }
 
-        const char *test_file = argv[2];  // Subor s testovacimi vektormi
-        TestVector *vectors = NULL;       // Pole testovacich vektorov
-        int vector_count = 0;             // Pocet nacitanych vektorov
-        // Nacitanie testovacich vektorov zo suboru
-        if (load_test_vectors(test_file, &vectors, &vector_count) != 0) {
-            printf(
-                "Chyba pri nacitani testovacich vektorov zo suboru: %s\n",
-                test_file);
+        memset(&header, 0, sizeof(header));
+        memcpy(header.magic, "AESXTS", 6);
+        header.version = 1;
+        header.encryption_type = 1;
+        header.start_sector = RESERVED_SECTORS;
+        header.iterations = 10;
+        header.memory_cost = 65536;
+        header.key_bits = key_bits; 
+
+        if (!RAND_bytes(header.salt, SALT_SIZE)) {
+            print_openssl_error();
+            close_device(&ctx);
+            aes_xts_cleanup();
             return 1;
         }
 
-        printf("Nacitane testovacie vektory: %d\n\n", vector_count);
-        test_vectors(vectors, vector_count);  // Spustenie testovania
-        // Uvolnenie pamate pre kazdy nacitany vektor
-        for (int i = 0; i < vector_count; i++) {
-            free(vectors[i].plaintext);   // Uvolnenie plaintext bufferu
-            free(vectors[i].ciphertext);  // Uvolnenie ciphertext bufferu
+        if (derive_keys_from_password(password, header.salt, SALT_SIZE,
+                                    key1, key2, key_bits,
+                                    header.iterations, header.memory_cost) != AES_XTS_SUCCESS) {
+            close_device(&ctx);
+            aes_xts_cleanup();
+            return 1;
         }
-        free(vectors);  // Uvolnenie pola vektorov
-        return 0;       // Ukoncenie po dokonceni testovania
-    }
+        
+        create_verification_data(key1, key_bits, header.salt, header.verification_data);
+        printf("Verifikacne data vytvorene\n");
 
-    // Nastavenie a kontrola spravnej velkosti kluca
-    int key_bits = 128;  // Predvolena hodnota
-    if (strcmp(argv[2], "256") == 0) {
-        key_bits = 256;
-    } else if (strcmp(argv[2], "128") != 0) {
-        printf("Nespravna velkost kluca. Pouzite 128 alebo 256.\n");
+        if (write_header(&ctx, &header) != AES_XTS_SUCCESS) {
+            fprintf(stderr, "Zlyhalo zapisanie hlavicky\n");
+            close_device(&ctx);
+            aes_xts_cleanup();
+            return 1;
+        }
+
+        result = process_sectors(&ctx, key1, key2, header.start_sector, 1, key_bits);
+    } 
+    else if (strcmp(operation, "decrypt") == 0) {
+        if (read_header(&ctx, &header) != AES_XTS_SUCCESS) {
+            fprintf(stderr, "Zlyhalo nacitanie hlavicky alebo neplatna hlavicka\n");
+            close_device(&ctx);
+            aes_xts_cleanup();
+            return 1;
+        }
+        
+        if (!process_password_input(password, sizeof(password), 0)) {
+            close_device(&ctx);
+            aes_xts_cleanup();
+            return 1;
+        }
+
+        printf("Pouziva sa %d-bitove sifrovanie (z hlavicky)\n", header.key_bits);
+
+        if (derive_keys_from_password(password, header.salt, SALT_SIZE,
+                                    key1, key2, header.key_bits, 
+                                    header.iterations, header.memory_cost) != AES_XTS_SUCCESS) {
+            close_device(&ctx);
+            aes_xts_cleanup();
+            return 1;
+        }
+
+        uint8_t verification_check[32];
+        create_verification_data(key1, header.key_bits, header.salt, verification_check);
+
+        if (memcmp(verification_check, header.verification_data, 32) != 0) {
+            fprintf(stderr, "Chyba: Neplatne heslo alebo poskodene data\n");
+            close_device(&ctx);
+            aes_xts_cleanup();
+            return 1;
+        }
+
+        printf("Overenie hesla uspesne\n");
+        
+        result = process_sectors(&ctx, key1, key2, header.start_sector, 0, header.key_bits);
+    }
+    else {
+        fprintf(stderr, "Neznamy prikaz: %s\n", operation);
+        close_device(&ctx);
+        aes_xts_cleanup();
         return 1;
     }
 
-    char password[256];
-    get_password(password, sizeof(password));
-
-    // Spracovanie suborov od indexu argumentu 3 (po zvoleni operacie a
-    // rezimu 128/256)
-    for (int i = 3; i < argc; i++) {
-        const char *input_filename = argv[i];
-        process_file(operation, input_filename, password, key_bits);
+    // Clean up
+    close_device(&ctx);
+    aes_xts_cleanup();
+    
+    if (result == AES_XTS_SUCCESS) {
+        printf("\nOperacia uspesne dokoncena.\n");
     }
-
-    // Cistenie OpenSSL zdrojov a uvolnenie pamate
-    EVP_cleanup();       // Vycistenie/uvolnenie sifrovanych udajov
-    ERR_free_strings();  // Uvolnenie chybovych retazcov
-
-    return 0;
+    return result;
 }
