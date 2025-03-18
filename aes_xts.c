@@ -298,7 +298,7 @@ int process_sectors(
     uint8_t *key2,
     uint64_t start_sector,
     int encrypt,
-    int key_bits  // Nový parametr
+    int key_bits
 ) {
     unsigned char *buffer = NULL;
     uint64_t sector_num = 0;
@@ -449,14 +449,12 @@ int process_sectors(
         }
         #endif
         
-        // Update position trackers after processing a block
         #ifdef _WIN32
         currentOffset.QuadPart += bytesWritten;
         #else
         currentOffset += bytesWritten;
         #endif
 
-        // Update sector number
         sector_num += completeSectors;
 
         #ifdef _WIN32
