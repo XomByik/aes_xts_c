@@ -789,12 +789,10 @@ void check_volume(const char *path) {
     }
 }
 
-// Get device size 
 LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
     LARGE_INTEGER size = {0};
     DWORD bytesReturned;
     
-    // Try IOCTL method first for both types
     if (type == DEVICE_TYPE_VOLUME) {
         GET_LENGTH_INFORMATION lengthInfo;
         if (DeviceIoControl(hDevice, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0,
@@ -816,7 +814,6 @@ LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
     LARGE_INTEGER zero = {0};
     if (SetFilePointerEx(hDevice, zero, &size, FILE_END)) {
         printf("Velkost zariadenia z vyhladavania: %lld bajtov\n", size.QuadPart);
-        // Go back to start
         SetFilePointerEx(hDevice, zero, NULL, FILE_BEGIN);
         return size;
     }
@@ -850,7 +847,7 @@ int prepare_device_for_encryption(const char *path, HANDLE *handle) {
         *handle = CreateFileA(
             path,
             GENERIC_READ | GENERIC_WRITE,
-            0,  // No sharing
+            0, 
             NULL,
             OPEN_EXISTING,
             FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
@@ -1137,7 +1134,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Clean up
     close_device(&ctx);
     aes_xts_cleanup();
     
