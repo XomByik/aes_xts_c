@@ -67,15 +67,15 @@ int32_t aes_xts_crypt_sector(
         return AES_XTS_ERROR_OPENSSL;
     }
 
-    int success = 1;
+    int success;
     if (encrypt) {
-        success = EVP_EncryptInit_ex(ctx, cipher, NULL, combined_key, iv) &&
-                 EVP_EncryptUpdate(ctx, data, &len, data, data_len) &&
-                 EVP_EncryptFinal_ex(ctx, data + len, &len);
+        success = EVP_EncryptInit_ex(ctx, cipher, NULL, combined_key, iv);
+        if (success) success = EVP_EncryptUpdate(ctx, data, &len, data, data_len);
+        if (success) success = EVP_EncryptFinal_ex(ctx, data + len, &len);
     } else {
-        success = EVP_DecryptInit_ex(ctx, cipher, NULL, combined_key, iv) &&
-                 EVP_DecryptUpdate(ctx, data, &len, data, data_len) &&
-                 EVP_DecryptFinal_ex(ctx, data + len, &len);
+        success = EVP_DecryptInit_ex(ctx, cipher, NULL, combined_key, iv);
+        if (success) success = EVP_DecryptUpdate(ctx, data, &len, data, data_len);
+        if (success) success = EVP_DecryptFinal_ex(ctx, data + len, &len);
     }
     
     if (!success) {
@@ -102,7 +102,6 @@ int derive_keys_from_password(
     uint8_t combined_key[AES_KEY_LENGTH_256 * 2];
     uint32_t parallelism = DEFAULT_PARALLELISM;
     
-    // Fetch Argon2id KDF
     EVP_KDF *kdf = EVP_KDF_fetch(NULL, "ARGON2ID", NULL);
     if (!kdf) {
         fprintf(stderr, "Chyba: Argon2id nie je dostupny v tejto verzii OpenSSL\n");
@@ -110,16 +109,13 @@ int derive_keys_from_password(
         return AES_XTS_ERROR_OPENSSL;
     }
     
-    // Create KDF context
     EVP_KDF_CTX *kctx = EVP_KDF_CTX_new(kdf);
-    EVP_KDF_free(kdf);  // Free KDF after creating context
-    
+    EVP_KDF_free(kdf);  
     if (!kctx) {
         print_openssl_error();
         return AES_XTS_ERROR_OPENSSL;
     }
     
-    // Setup parameters for Argon2id
     OSSL_PARAM params[] = {
         OSSL_PARAM_construct_octet_string("pass", (void*)password, strlen((const char*)password)),
         OSSL_PARAM_construct_octet_string("salt", (void*)salt, salt_len),
@@ -129,7 +125,6 @@ int derive_keys_from_password(
         OSSL_PARAM_construct_end()
     };
     
-    // Derive the key
     if (EVP_KDF_derive(kctx, combined_key, key_len * 2, params) <= 0) {
         print_openssl_error();
         EVP_KDF_CTX_free(kctx);
@@ -138,7 +133,6 @@ int derive_keys_from_password(
     
     EVP_KDF_CTX_free(kctx);
     
-    // Split the combined key
     memcpy(key1, combined_key, key_len);
     memcpy(key2, combined_key + key_len, key_len);
     
@@ -157,16 +151,26 @@ void read_password(uint8_t *password, size_t max_len, const char *prompt) {
     DWORD mode = 0;
     GetConsoleMode(hStdin, &mode);
     SetConsoleMode(hStdin, mode & (~ENABLE_ECHO_INPUT));
+    #else
+    struct termios old_term, new_term;
+    tcgetattr(STDIN_FILENO, &old_term);
+    new_term = old_term;
+    new_term.c_lflag &= ~(ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
+    #endif
     
     while (i < max_len - 1) {
+        #ifdef _WIN32
         c = _getch();
+        #else
+        c = getchar();
+        #endif
         
-        if (c == '\r' || c == '\n') { 
+        if (c == '\r' || c == '\n' || c == EOF) 
             break;
-        }
-        else if (c == '\b' && i > 0) {
+        else if ((c == '\b' || c == 127) && i > 0) {
             i--;
-            printf("\b \b"); 
+            printf("\b \b");
             fflush(stdout);
         }
         else if (c >= 32 && c <= 255) {
@@ -176,35 +180,9 @@ void read_password(uint8_t *password, size_t max_len, const char *prompt) {
         }
     }
     
+    #ifdef _WIN32
     SetConsoleMode(hStdin, mode);
     #else
-    struct termios old_term, new_term;
-    tcgetattr(STDIN_FILENO, &old_term);
-    new_term = old_term;
-    new_term.c_lflag &= ~(ECHO);
-    
-    tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
-    
-    while (i < max_len - 1) {
-        c = getchar();
-        
-        if (c == '\n' || c == EOF) {
-            break;
-        }
-        else if (c == 127 || c == '\b') { 
-            if (i > 0) {
-                i--;
-                printf("\b \b");
-                fflush(stdout);
-            }
-        }
-        else if (c >= 0 && c <= 255) {
-            password[i++] = c;
-            printf("*");
-            fflush(stdout);
-        }
-    }
-    
     tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
     #endif
     
@@ -309,15 +287,13 @@ static void process_block(
     const size_t completeSectors = bytesRead / SECTOR_SIZE;
     const size_t remainderBytes = bytesRead % SECTOR_SIZE;
 
-    // Process complete sectors in parallel
-    #pragma omp parallel for schedule(dynamic)
+    #pragma omp parallel for schedule(dynamic, 16)
     for (size_t i = 0; i < completeSectors; i++) {
         const uint64_t current_sector = sector_offset + i;
         uint8_t *sector_data = buffer + (i * SECTOR_SIZE);
         aes_xts_crypt_sector(key1, key2, current_sector, sector_data, SECTOR_SIZE, encrypt, key_bits);
     }
 
-    // Process any remainder bytes (partial sector)
     if (remainderBytes > 0) {
         uint8_t lastSectorBuffer[SECTOR_SIZE] = {0};
         memcpy(lastSectorBuffer, buffer + completeSectors * SECTOR_SIZE, remainderBytes);
@@ -352,21 +328,19 @@ int process_sectors(
         ctx->size - startOffset;
         #endif
     
-    // Allocate buffer for IO operations
-    uint8_t *buffer = allocate_aligned_buffer(BUFFER_SIZE + SECTOR_SIZE);
+    const size_t buffer_size = BUFFER_SIZE + SECTOR_SIZE;
+    uint8_t *buffer = allocate_aligned_buffer(buffer_size);
     if (!buffer) {
         fprintf(stderr, "Zlyhala alokacia pamate\n");
         return AES_XTS_ERROR_IO;
     }
     
-    // Set initial position
     if (!set_position(ctx, startOffset)) {
         fprintf(stderr, "Chyba pri nastaveni pozicie v zariadeni\n");
-        secure_free_buffer(buffer, BUFFER_SIZE + SECTOR_SIZE);
+        secure_free_buffer(buffer, buffer_size);
         return AES_XTS_ERROR_IO;
     }
     
-    // Process in chunks
     uint64_t currentOffset = startOffset;
     uint64_t sector_num = 0;
     
@@ -375,33 +349,33 @@ int process_sectors(
            encrypt ? " (toto moze trvat niekolko minut)" : "");
     
     while (currentOffset < startOffset + total_size) {
-        // Read a block of data
         ssize_t bytesRead = read_sectors_block(ctx, buffer, BUFFER_SIZE, currentOffset);
-        if (bytesRead <= 0) break;
-            
-        // Process the block (encrypt/decrypt)
+        if (bytesRead <= 0) {
+            if (bytesRead < 0) {
+                fprintf(stderr, "Chyba pri citani dat\n");
+                secure_free_buffer(buffer, buffer_size);
+                return AES_XTS_ERROR_IO;
+            }
+            break; 
+        }
+        
         process_block(buffer, bytesRead, encrypt, key_bits, key1, key2, sector_num);
         
-        // Write processed data back
-        const size_t bytesToWrite = bytesRead;
-        ssize_t bytesWritten = write_sectors_block(ctx, buffer, bytesToWrite, currentOffset);
-        
-        if (bytesWritten != (ssize_t)bytesToWrite) {
+        ssize_t bytesWritten = write_sectors_block(ctx, buffer, bytesRead, currentOffset);
+        if (bytesWritten != bytesRead) {
             fprintf(stderr, "Chyba pri zapise dat\n");
-            secure_free_buffer(buffer, BUFFER_SIZE + SECTOR_SIZE);
+            secure_free_buffer(buffer, buffer_size);
             return AES_XTS_ERROR_IO;
         }
         
-        // Update progress tracking
         currentOffset += bytesWritten;
         sector_num += bytesRead / SECTOR_SIZE;
         
-        // Show progress
         uint64_t progress = currentOffset - startOffset;
         show_progress(progress, total_size, sector_num);
     }
     
-    secure_free_buffer(buffer, BUFFER_SIZE + SECTOR_SIZE);
+    secure_free_buffer(buffer, buffer_size);
     return AES_XTS_SUCCESS;
 }
 
@@ -412,16 +386,13 @@ int header_io(device_context_t *ctx, xts_header_t *header, int isWrite) {
         return AES_XTS_ERROR_MEMORY;
     }
     
-    // Clear the sector buffer
     memset(sector, 0, SECTOR_SIZE);
     
-    // For writing, copy header to sector buffer
     if (isWrite) {
         memcpy(sector, header, sizeof(xts_header_t));
         printf("Zapisujem hlavicku - magic: %.6s verzia: %u\n", header->magic, header->version);
     }
     
-    // Position at header sector
     const uint64_t headerPos = (uint64_t)HEADER_SECTOR * SECTOR_SIZE;
     if (!set_position(ctx, headerPos)) {
         fprintf(stderr, "Zlyhalo nastavenie pozicie hlavicky\n");
@@ -429,7 +400,6 @@ int header_io(device_context_t *ctx, xts_header_t *header, int isWrite) {
         return AES_XTS_ERROR_IO;
     }
     
-    // Perform IO
     ssize_t bytesTransferred;
     if (isWrite) {
         bytesTransferred = write_data(ctx, sector, SECTOR_SIZE);
@@ -439,7 +409,6 @@ int header_io(device_context_t *ctx, xts_header_t *header, int isWrite) {
             return AES_XTS_ERROR_IO;
         }
         
-        // Ensure data is written to disk
         #ifdef _WIN32
         FlushFileBuffers(ctx->handle);
         #else
@@ -453,10 +422,8 @@ int header_io(device_context_t *ctx, xts_header_t *header, int isWrite) {
             return AES_XTS_ERROR_IO;
         }
         
-        // Copy from sector to header
         memcpy(header, sector, sizeof(xts_header_t));
         
-        // Verify magic
         if (memcmp(header->magic, HEADER_MAGIC, HEADER_MAGIC_SIZE) != 0) {
             fprintf(stderr, "Neplatna magicka hodnota v hlavicke\n");
             secure_free_buffer(sector, SECTOR_SIZE);
@@ -662,24 +629,37 @@ bool process_password_input(uint8_t *password, size_t password_size, int verify)
 }
 
 void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *salt, uint8_t *verification_data) {
-    EVP_MAC *hmac = EVP_MAC_fetch(NULL, "HMAC", NULL);
-    EVP_MAC_CTX *hmac_ctx = EVP_MAC_CTX_new(hmac);
-
-    OSSL_PARAM params[2];
-    char md_name[] = "SHA256";
-    params[0] = OSSL_PARAM_construct_utf8_string("digest", md_name, strlen(md_name));
-    params[1] = OSSL_PARAM_construct_end();
-
-    size_t hmac_key_len = key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128;
-    EVP_MAC_init(hmac_ctx, key, hmac_key_len, params);
-
     const char *verify_str = "AES-XTS-VERIFY";
-    EVP_MAC_update(hmac_ctx, (uint8_t *)verify_str, strlen(verify_str));
-    EVP_MAC_update(hmac_ctx, salt, SALT_LENGTH);
-
-    size_t out_len = VERIFICATION_DATA_SIZE;
-    EVP_MAC_final(hmac_ctx, verification_data, &out_len, VERIFICATION_DATA_SIZE);
-
+    size_t hmac_key_len = key_bits / BITS_PER_BYTE;
+    
+    EVP_MAC *hmac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+    if (!hmac) {
+        print_openssl_error();
+        return;
+    }
+    
+    EVP_MAC_CTX *hmac_ctx = EVP_MAC_CTX_new(hmac);
+    if (!hmac_ctx) {
+        EVP_MAC_free(hmac);
+        print_openssl_error();
+        return;
+    }
+    
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string("digest", "SHA256", 0),
+        OSSL_PARAM_construct_end()
+    };
+    
+    if (EVP_MAC_init(hmac_ctx, key, hmac_key_len, params) &&
+        EVP_MAC_update(hmac_ctx, (uint8_t *)verify_str, strlen(verify_str)) &&
+        EVP_MAC_update(hmac_ctx, salt, SALT_LENGTH)) {
+        
+        size_t out_len = VERIFICATION_DATA_SIZE;
+        EVP_MAC_final(hmac_ctx, verification_data, &out_len, VERIFICATION_DATA_SIZE);
+    } else {
+        print_openssl_error();
+    }
+    
     EVP_MAC_CTX_free(hmac_ctx);
     EVP_MAC_free(hmac);
 }
@@ -750,9 +730,10 @@ bool parse_arguments(int argc, char *argv[], const char **operation,
 }
 
 int encrypt_device(device_context_t *ctx, const char *device_path, int key_bits) {
-    uint8_t password[PASSWORD_BUFFER_SIZE];
-    uint8_t key1[KEY_SIZE], key2[KEY_SIZE];
-    xts_header_t header;
+    uint8_t password[PASSWORD_BUFFER_SIZE] = {0};
+    uint8_t key1[KEY_SIZE] = {0}, key2[KEY_SIZE] = {0};
+    xts_header_t header = {0};
+    int result = 0;
     
     printf("Pouziva sa %d-bitove sifrovanie\n", key_bits);
     
@@ -765,7 +746,6 @@ int encrypt_device(device_context_t *ctx, const char *device_path, int key_bits)
         return 0;
     }
 
-    memset(&header, 0, sizeof(header));
     memcpy(header.magic, HEADER_MAGIC, HEADER_MAGIC_SIZE);
     header.version = HEADER_VERSION;
     header.encryption_type = HEADER_ENCRYPTION_TYPE;
@@ -793,14 +773,20 @@ int encrypt_device(device_context_t *ctx, const char *device_path, int key_bits)
         return 0;
     }
 
-    return process_sectors(ctx, key1, key2, header.start_sector, ENCRYPT_MODE, key_bits);
+    result = process_sectors(ctx, key1, key2, header.start_sector, ENCRYPT_MODE, key_bits);
+    
+    memset(password, 0, sizeof(password));
+    memset(key1, 0, sizeof(key1));
+    memset(key2, 0, sizeof(key2));
+    
+    return result;
 }
 
 int decrypt_device(device_context_t *ctx) {
-    uint8_t password[PASSWORD_BUFFER_SIZE];
-    uint8_t key1[KEY_SIZE], key2[KEY_SIZE];
-    xts_header_t header;
-    int result;
+    uint8_t password[PASSWORD_BUFFER_SIZE] = {0};
+    uint8_t key1[KEY_SIZE] = {0}, key2[KEY_SIZE] = {0};
+    xts_header_t header = {0};
+    int result = 0;
     
     if (header_io(ctx, &header, 0) != AES_XTS_SUCCESS) {
         fprintf(stderr, "Zlyhalo nacitanie hlavicky alebo neplatna hlavicka\n");
@@ -824,12 +810,21 @@ int decrypt_device(device_context_t *ctx) {
 
     if (memcmp(verification_check, header.verification_data, VERIFICATION_DATA_SIZE) != 0) {
         fprintf(stderr, "Chyba: Neplatne heslo alebo poskodene data\n");
+        
+        memset(password, 0, sizeof(password));
+        memset(key1, 0, sizeof(key1));
+        memset(key2, 0, sizeof(key2));
+        
         return AES_XTS_ERROR_WRONG_PWD;
     }
 
     printf("Overenie hesla uspesne\n");
     
     result = process_sectors(ctx, key1, key2, header.start_sector, DECRYPT_MODE, header.key_bits);
+    
+    memset(password, 0, sizeof(password));
+    memset(key1, 0, sizeof(key1));
+    memset(key2, 0, sizeof(key2));
     
     return result;
 }
@@ -838,21 +833,20 @@ int main(int argc, char *argv[]) {
     const char *operation = NULL;
     const char *device_path = NULL;
     int key_bits = DEFAULT_KEY_BITS;
-    int result = 0;
+    int result = AES_XTS_ERROR_PARAM; 
     
     if (!parse_arguments(argc, argv, &operation, &device_path, &key_bits)) {
-        return 1;
+        return EXIT_FAILURE;
     }
     
     aes_xts_init();
     
-    device_context_t ctx;
-    memset(&ctx, 0, sizeof(ctx));
+    device_context_t ctx = {0};
     
     if (!open_device(device_path, &ctx)) {
         fprintf(stderr, "Chyba: Nepodarilo sa otvorit zariadenie %s\n", device_path);
         aes_xts_cleanup();
-        return 1;
+        return EXIT_FAILURE;
     }
     
     if (strcmp(operation, "encrypt") == 0) {
@@ -863,16 +857,22 @@ int main(int argc, char *argv[]) {
     }
     else {
         fprintf(stderr, "Neznamy prikaz: %s\n", operation);
-        close_device(&ctx);
-        aes_xts_cleanup();
-        return 1;
+        result = AES_XTS_ERROR_PARAM;
     }
-
+    
     close_device(&ctx);
     aes_xts_cleanup();
     
     if (result == AES_XTS_SUCCESS) {
         printf("\nOperacia uspesne dokoncena.\n");
+        return EXIT_SUCCESS;
     }
-    return result;
+    else if (result == 0) {
+        printf("\nOperacia zrusena pouzivatelom.\n");
+        return EXIT_SUCCESS;
+    }
+    else {
+        fprintf(stderr, "\nOperacia zlyhala s chybovym kodom %d.\n", result);
+        return EXIT_FAILURE;
+    }
 }
