@@ -47,48 +47,41 @@ int32_t aes_xts_crypt_sector(
     EVP_CIPHER_CTX *ctx;
     uint8_t iv[IV_SIZE] = {0};
     int len;
+    const EVP_CIPHER *cipher = (key_bits == 128) ? EVP_aes_128_xts() : EVP_aes_256_xts();
     size_t key_size = key_bits / BITS_PER_BYTE;
-    uint8_t combined_key[KEY_SIZE * 2]; 
-    const EVP_CIPHER *cipher;
     
-    #ifdef _WIN32
-    uint64_t effective_sector = sector_num + RESERVED_SECTORS;
-    #else
-    uint64_t effective_sector = sector_num;
-    #endif
+    *(uint64_t*)iv = sector_num + (
+        #ifdef _WIN32
+        RESERVED_SECTORS
+        #else
+        0
+        #endif
+    );
     
-    *(uint64_t*)iv = effective_sector;
-    
+    uint8_t combined_key[KEY_SIZE * 2];
     memcpy(combined_key, key1, key_size);
     memcpy(combined_key + key_size, key2, key_size);
 
-    if (key_bits == 128) {
-        cipher = EVP_aes_128_xts();
-    } else {
-        cipher = EVP_aes_256_xts(); 
-    }
-    
     if (!(ctx = EVP_CIPHER_CTX_new())) {
         print_openssl_error();
         return AES_XTS_ERROR_OPENSSL;
     }
 
+    int success = 1;
     if (encrypt) {
-        if (EVP_EncryptInit_ex(ctx, cipher, NULL, combined_key, iv) != 1 ||
-            EVP_EncryptUpdate(ctx, data, &len, data, data_len) != 1 ||
-            EVP_EncryptFinal_ex(ctx, data + len, &len) != 1) {
-            print_openssl_error();
-            EVP_CIPHER_CTX_free(ctx);
-            return AES_XTS_ERROR_OPENSSL;
-        }
+        success = EVP_EncryptInit_ex(ctx, cipher, NULL, combined_key, iv) &&
+                 EVP_EncryptUpdate(ctx, data, &len, data, data_len) &&
+                 EVP_EncryptFinal_ex(ctx, data + len, &len);
     } else {
-        if (EVP_DecryptInit_ex(ctx, cipher, NULL, combined_key, iv) != 1 ||
-            EVP_DecryptUpdate(ctx, data, &len, data, data_len) != 1 ||
-            EVP_DecryptFinal_ex(ctx, data + len, &len) != 1) {
-            print_openssl_error();
-            EVP_CIPHER_CTX_free(ctx);
-            return AES_XTS_ERROR_OPENSSL;
-        }
+        success = EVP_DecryptInit_ex(ctx, cipher, NULL, combined_key, iv) &&
+                 EVP_DecryptUpdate(ctx, data, &len, data, data_len) &&
+                 EVP_DecryptFinal_ex(ctx, data + len, &len);
+    }
+    
+    if (!success) {
+        print_openssl_error();
+        EVP_CIPHER_CTX_free(ctx);
+        return AES_XTS_ERROR_OPENSSL;
     }
 
     EVP_CIPHER_CTX_free(ctx);
@@ -107,7 +100,9 @@ int derive_keys_from_password(
 ) {
     size_t key_len = key_bits / BITS_PER_BYTE;
     uint8_t combined_key[AES_KEY_LENGTH_256 * 2];
+    uint32_t parallelism = DEFAULT_PARALLELISM;
     
+    // Fetch Argon2id KDF
     EVP_KDF *kdf = EVP_KDF_fetch(NULL, "ARGON2ID", NULL);
     if (!kdf) {
         fprintf(stderr, "Chyba: Argon2id nie je dostupny v tejto verzii OpenSSL\n");
@@ -115,22 +110,26 @@ int derive_keys_from_password(
         return AES_XTS_ERROR_OPENSSL;
     }
     
+    // Create KDF context
     EVP_KDF_CTX *kctx = EVP_KDF_CTX_new(kdf);
-    EVP_KDF_free(kdf);
+    EVP_KDF_free(kdf);  // Free KDF after creating context
     
     if (!kctx) {
         print_openssl_error();
         return AES_XTS_ERROR_OPENSSL;
     }
     
-    OSSL_PARAM params[6];
-    params[0] = OSSL_PARAM_construct_octet_string("pass", (void*)password, strlen((const char*)password));
-    params[1] = OSSL_PARAM_construct_octet_string("salt", (void*)salt, salt_len);
-    params[2] = OSSL_PARAM_construct_uint32("iterations", &iterations);
-    params[3] = OSSL_PARAM_construct_uint32("m_cost", &memory_cost);
-    params[4] = OSSL_PARAM_construct_uint32("parallelism", &(uint32_t){DEFAULT_PARALLELISM}); 
-    params[5] = OSSL_PARAM_construct_end();
+    // Setup parameters for Argon2id
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_octet_string("pass", (void*)password, strlen((const char*)password)),
+        OSSL_PARAM_construct_octet_string("salt", (void*)salt, salt_len),
+        OSSL_PARAM_construct_uint32("iterations", &iterations),
+        OSSL_PARAM_construct_uint32("m_cost", &memory_cost),
+        OSSL_PARAM_construct_uint32("parallelism", &parallelism),
+        OSSL_PARAM_construct_end()
+    };
     
+    // Derive the key
     if (EVP_KDF_derive(kctx, combined_key, key_len * 2, params) <= 0) {
         print_openssl_error();
         EVP_KDF_CTX_free(kctx);
@@ -139,6 +138,7 @@ int derive_keys_from_password(
     
     EVP_KDF_CTX_free(kctx);
     
+    // Split the combined key
     memcpy(key1, combined_key, key_len);
     memcpy(key2, combined_key + key_len, key_len);
     
@@ -297,21 +297,34 @@ static ssize_t read_sectors_block(device_context_t *ctx, uint8_t *buffer, size_t
     return read_data(ctx, buffer, bytesToRead);
 }
 
-static void process_block(uint8_t *buffer, ssize_t bytesRead, int encrypt, int key_bits, const uint8_t *key1, const uint8_t *key2, uint64_t sector_offset) {
-    size_t completeSectors = bytesRead / SECTOR_SIZE;
-    size_t remainderBytes = bytesRead % SECTOR_SIZE;
+static void process_block(
+    uint8_t *buffer, 
+    ssize_t bytesRead, 
+    int encrypt, 
+    int key_bits, 
+    const uint8_t *key1, 
+    const uint8_t *key2, 
+    uint64_t sector_offset
+) {
+    const size_t completeSectors = bytesRead / SECTOR_SIZE;
+    const size_t remainderBytes = bytesRead % SECTOR_SIZE;
 
-    #pragma omp parallel for
-    for (size_t offset = 0; offset < completeSectors * SECTOR_SIZE; offset += SECTOR_SIZE) {
-        uint64_t current_sector = sector_offset + (offset / SECTOR_SIZE);
-        aes_xts_crypt_sector(key1, key2, current_sector, buffer + offset, SECTOR_SIZE, encrypt, key_bits);
+    // Process complete sectors in parallel
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t i = 0; i < completeSectors; i++) {
+        const uint64_t current_sector = sector_offset + i;
+        uint8_t *sector_data = buffer + (i * SECTOR_SIZE);
+        aes_xts_crypt_sector(key1, key2, current_sector, sector_data, SECTOR_SIZE, encrypt, key_bits);
     }
 
+    // Process any remainder bytes (partial sector)
     if (remainderBytes > 0) {
         uint8_t lastSectorBuffer[SECTOR_SIZE] = {0};
         memcpy(lastSectorBuffer, buffer + completeSectors * SECTOR_SIZE, remainderBytes);
-        uint64_t last_sector = sector_offset + completeSectors;
+        
+        const uint64_t last_sector = sector_offset + completeSectors;
         aes_xts_crypt_sector(key1, key2, last_sector, lastSectorBuffer, SECTOR_SIZE, encrypt, key_bits);
+        
         memcpy(buffer + completeSectors * SECTOR_SIZE, lastSectorBuffer, remainderBytes);
     }
 }
@@ -331,55 +344,59 @@ int process_sectors(
     int encrypt,
     int key_bits
 ) {
-    uint8_t *buffer = NULL;
-    uint64_t sector_num = 0;
-    uint64_t total_size = 0;
-    uint64_t currentOffset, startOffset;
-    ssize_t bytesRead, bytesWritten;
+    const uint64_t startOffset = start_sector * SECTOR_SIZE;
+    const uint64_t total_size = 
+        #ifdef _WIN32
+        ctx->size.QuadPart - startOffset;
+        #else
+        ctx->size - startOffset;
+        #endif
     
-    startOffset = start_sector * SECTOR_SIZE;
-    currentOffset = startOffset;
-    
-    buffer = allocate_aligned_buffer(BUFFER_SIZE + SECTOR_SIZE);
+    // Allocate buffer for IO operations
+    uint8_t *buffer = allocate_aligned_buffer(BUFFER_SIZE + SECTOR_SIZE);
     if (!buffer) {
         fprintf(stderr, "Zlyhala alokacia pamate\n");
         return AES_XTS_ERROR_IO;
     }
-    memset(buffer, 0, BUFFER_SIZE + SECTOR_SIZE);
     
+    // Set initial position
     if (!set_position(ctx, startOffset)) {
         fprintf(stderr, "Chyba pri nastaveni pozicie v zariadeni\n");
         secure_free_buffer(buffer, BUFFER_SIZE + SECTOR_SIZE);
         return AES_XTS_ERROR_IO;
     }
     
-    #ifdef _WIN32
-    total_size = ctx->size.QuadPart - startOffset;
-    #else
-    total_size = ctx->size - startOffset;
-    #endif
-
+    // Process in chunks
+    uint64_t currentOffset = startOffset;
+    uint64_t sector_num = 0;
+    
+    printf("Zacinam %s...%s\n", 
+           encrypt ? "sifrovanie" : "desifrovanie",
+           encrypt ? " (toto moze trvat niekolko minut)" : "");
+    
     while (currentOffset < startOffset + total_size) {
-        bytesRead = read_sectors_block(ctx, buffer, BUFFER_SIZE, currentOffset);
-        if (bytesRead <= 0)
-            break;
+        // Read a block of data
+        ssize_t bytesRead = read_sectors_block(ctx, buffer, BUFFER_SIZE, currentOffset);
+        if (bytesRead <= 0) break;
             
+        // Process the block (encrypt/decrypt)
         process_block(buffer, bytesRead, encrypt, key_bits, key1, key2, sector_num);
         
-        size_t completeSectors = bytesRead / SECTOR_SIZE;
-        size_t remainderBytes = bytesRead % SECTOR_SIZE;
-        size_t bytesToWrite = completeSectors * SECTOR_SIZE + remainderBytes;
+        // Write processed data back
+        const size_t bytesToWrite = bytesRead;
+        ssize_t bytesWritten = write_sectors_block(ctx, buffer, bytesToWrite, currentOffset);
         
-        bytesWritten = write_sectors_block(ctx, buffer, bytesToWrite, currentOffset);
         if (bytesWritten != (ssize_t)bytesToWrite) {
             fprintf(stderr, "Chyba pri zapise dat\n");
             secure_free_buffer(buffer, BUFFER_SIZE + SECTOR_SIZE);
             return AES_XTS_ERROR_IO;
         }
         
+        // Update progress tracking
         currentOffset += bytesWritten;
-        sector_num += completeSectors;
+        sector_num += bytesRead / SECTOR_SIZE;
         
+        // Show progress
         uint64_t progress = currentOffset - startOffset;
         show_progress(progress, total_size, sector_num);
     }
@@ -391,78 +408,60 @@ int process_sectors(
 int header_io(device_context_t *ctx, xts_header_t *header, int isWrite) {
     uint8_t *sector = allocate_aligned_buffer(SECTOR_SIZE);
     if (!sector) {
-        fprintf(stderr, "Zlyhala alokacia vyrobnavej pamate pre hlavicku\n");
+        fprintf(stderr, "Zlyhala alokacia pamate pre hlavicku\n");
         return AES_XTS_ERROR_MEMORY;
     }
+    
+    // Clear the sector buffer
     memset(sector, 0, SECTOR_SIZE);
-
+    
+    // For writing, copy header to sector buffer
     if (isWrite) {
         memcpy(sector, header, sizeof(xts_header_t));
-        printf("Zapisovanie hlavicky - magic: %.6s verzia: %u\n", header->magic, header->version);
+        printf("Zapisujem hlavicku - magic: %.6s verzia: %u\n", header->magic, header->version);
     }
-
-    #ifdef _WIN32
-    {
-        DWORD bytesTransferred;
-        LARGE_INTEGER pos;
-        pos.QuadPart = (LONGLONG)HEADER_SECTOR * SECTOR_SIZE;
-        if (!set_file_position(ctx->handle, pos)) {
-            fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky\n");
+    
+    // Position at header sector
+    const uint64_t headerPos = (uint64_t)HEADER_SECTOR * SECTOR_SIZE;
+    if (!set_position(ctx, headerPos)) {
+        fprintf(stderr, "Zlyhalo nastavenie pozicie hlavicky\n");
+        secure_free_buffer(sector, SECTOR_SIZE);
+        return AES_XTS_ERROR_IO;
+    }
+    
+    // Perform IO
+    ssize_t bytesTransferred;
+    if (isWrite) {
+        bytesTransferred = write_data(ctx, sector, SECTOR_SIZE);
+        if (bytesTransferred != SECTOR_SIZE) {
+            fprintf(stderr, "Zlyhalo zapisanie hlavicky\n");
             secure_free_buffer(sector, SECTOR_SIZE);
             return AES_XTS_ERROR_IO;
         }
         
-        if (isWrite) {
-            if (!WriteFile(ctx->handle, sector, SECTOR_SIZE, &bytesTransferred, NULL) ||
-                bytesTransferred != SECTOR_SIZE) {
-                fprintf(stderr, "Zlyhalo zapisanie hlavicky\n");
-                secure_free_buffer(sector, SECTOR_SIZE);
-                return AES_XTS_ERROR_IO;
-            }
-            FlushFileBuffers(ctx->handle);
-        } else {
-            if (!ReadFile(ctx->handle, sector, SECTOR_SIZE, &bytesTransferred, NULL) ||
-                bytesTransferred != SECTOR_SIZE) {
-                fprintf(stderr, "Zlyhalo citanie hlavicky\n");
-                secure_free_buffer(sector, SECTOR_SIZE);
-                return AES_XTS_ERROR_IO;
-            }
-            memcpy(header, sector, sizeof(xts_header_t));
-        }
-    }
-    #else
-    {
-        off_t pos = HEADER_SECTOR * SECTOR_SIZE;
-        if (lseek(ctx->fd, pos, SEEK_SET) != pos) {
-            fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky\n");
+        // Ensure data is written to disk
+        #ifdef _WIN32
+        FlushFileBuffers(ctx->handle);
+        #else
+        fsync(ctx->fd);
+        #endif
+    } else {
+        bytesTransferred = read_data(ctx, sector, SECTOR_SIZE);
+        if (bytesTransferred != SECTOR_SIZE) {
+            fprintf(stderr, "Zlyhalo citanie hlavicky\n");
             secure_free_buffer(sector, SECTOR_SIZE);
             return AES_XTS_ERROR_IO;
         }
-        ssize_t bytes;
-        if (isWrite) {
-            bytes = write(ctx->fd, sector, SECTOR_SIZE);
-            if (bytes != SECTOR_SIZE) {
-                fprintf(stderr, "Zlyhalo zapisanie hlavicky\n");
-                secure_free_buffer(sector, SECTOR_SIZE);
-                return AES_XTS_ERROR_IO;
-            }
-            fsync(ctx->fd);
-        } else {
-            bytes = read(ctx->fd, sector, SECTOR_SIZE);
-            if (bytes != SECTOR_SIZE) {
-                fprintf(stderr, "Zlyhalo citanie hlavicky\n");
-                secure_free_buffer(sector, SECTOR_SIZE);
-                return AES_XTS_ERROR_IO;
-            }
-            memcpy(header, sector, sizeof(xts_header_t));
+        
+        // Copy from sector to header
+        memcpy(header, sector, sizeof(xts_header_t));
+        
+        // Verify magic
+        if (memcmp(header->magic, HEADER_MAGIC, HEADER_MAGIC_SIZE) != 0) {
+            fprintf(stderr, "Neplatna magicka hodnota v hlavicke\n");
+            secure_free_buffer(sector, SECTOR_SIZE);
+            return AES_XTS_ERROR_PARAM;
         }
-    }
-    #endif
-
-    if (!isWrite && memcmp(header->magic, HEADER_MAGIC, HEADER_MAGIC_SIZE) != 0) {
-        fprintf(stderr, "Neplatna magicka hodnota v hlavicke\n");
-        secure_free_buffer(sector, SECTOR_SIZE);
-        return AES_XTS_ERROR_PARAM;
     }
     
     secure_free_buffer(sector, SECTOR_SIZE);
