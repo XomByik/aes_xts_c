@@ -1,4 +1,3 @@
-.gitignore
 .build/
 aes_xts
 *.exe
