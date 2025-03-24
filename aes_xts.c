@@ -523,9 +523,9 @@ BOOL is_admin(void) {
     BOOL isAdmin = FALSE;
     SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
     PSID AdminGroup;
-    
+
     if (AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
-                               DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &AdminGroup)) {
+                                 DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &AdminGroup)) {
         CheckTokenMembership(NULL, AdminGroup, &isAdmin);
         FreeSid(AdminGroup);
     }
@@ -533,19 +533,14 @@ BOOL is_admin(void) {
 }
 
 device_type_t get_device_type(const char *path) {
-    return (strncmp(path, "\\\\.\\PhysicalDrive", 17) == 0) ? 
-            DEVICE_TYPE_DISK : DEVICE_TYPE_VOLUME;
+    return (strncmp(path, "\\\\.\\PhysicalDrive", 17) == 0) ? DEVICE_TYPE_DISK : DEVICE_TYPE_VOLUME;
 }
 
 BOOL lock_and_dismount_volume(HANDLE hDevice) {
     DWORD bytesReturned;
-    BOOL locked = DeviceIoControl(hDevice, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
-    BOOL dismounted = DeviceIoControl(hDevice, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
-    
-    if (!dismounted)
-        fprintf(stderr, "Upozornenie: Nepodarilo sa odpojit zvazok: %lu\n", GetLastError());
-    
-    return locked && dismounted;
+    DeviceIoControl(hDevice, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    DeviceIoControl(hDevice, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    return TRUE;
 }
 
 void unlock_disk(HANDLE hDevice) {
@@ -564,60 +559,27 @@ void check_volume(const char *path) {
 LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
     LARGE_INTEGER size = {0};
     DWORD bytesReturned;
-    
+
     if (type == DEVICE_TYPE_VOLUME) {
         GET_LENGTH_INFORMATION lengthInfo;
-        if (DeviceIoControl(hDevice, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0,
-                          &lengthInfo, sizeof(lengthInfo), &bytesReturned, NULL)) {
-            size.QuadPart = lengthInfo.Length.QuadPart;
-            printf("Velkost zariadenia: %lld bajtov\n", size.QuadPart);
-            return size;
-        }
+        DeviceIoControl(hDevice, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0, &lengthInfo, sizeof(lengthInfo), &bytesReturned, NULL);
+        size.QuadPart = lengthInfo.Length.QuadPart;
     } else {
         DISK_GEOMETRY_EX diskGeometry;
-        if (DeviceIoControl(hDevice, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0,
-                          &diskGeometry, sizeof(diskGeometry), &bytesReturned, NULL)) {
-            size.QuadPart = diskGeometry.DiskSize.QuadPart;
-            printf("Velkost zariadenia: %lld bajtov\n", size.QuadPart);
-            return size;
-        }
+        DeviceIoControl(hDevice, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0, &diskGeometry, sizeof(diskGeometry), &bytesReturned, NULL);
+        size.QuadPart = diskGeometry.DiskSize.QuadPart;
     }
 
-    LARGE_INTEGER zero = {0};
-    if (SetFilePointerEx(hDevice, zero, &size, FILE_END)) {
-        SetFilePointerEx(hDevice, zero, NULL, FILE_BEGIN);
-        printf("Velkost zariadenia: %lld bajtov\n", size.QuadPart);
-    } else {
-        fprintf(stderr, "Zlyhalo zistenie velkosti zariadenia: %lu\n", GetLastError());
-    }
-    
     return size;
 }
 
 HANDLE open_device_with_retry(const char *path) {
-    HANDLE handle = CreateFileA(
-        path,
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL,
-        OPEN_EXISTING,
-        0,
-        NULL
-    );
-    
+    HANDLE handle = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+
     if (handle == INVALID_HANDLE_VALUE) {
-        printf("Pokus o otvorenie s exkluzivnym pristupom...\n");
-        handle = CreateFileA(
-            path,
-            GENERIC_READ | GENERIC_WRITE,
-             0,
-            NULL,
-            OPEN_EXISTING,
-            FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
-            NULL
-        );
+        handle = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH, NULL);
     }
-    
+
     return handle;
 }
 
@@ -626,78 +588,32 @@ bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
         fprintf(stderr, "Chyba: Vyzaduju sa administratorske opravnenia\n");
         return false;
     }
-    
+
     check_volume(path);
     *handle = open_device_with_retry(path);
-    
+
     if (*handle == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Zlyhalo otvorenie zariadenia: %lu\n", GetLastError());
         return false;
     }
-    
-    printf("Zariadenie uspesne otvorene\n");
-    printf("Pokus o odpojenie zvazku...\n");
-    
-    if (lock_and_dismount_volume(*handle)) {
-        printf("Zvazok uspesne odpojeny\n");
-    }
-    
+
+    lock_and_dismount_volume(*handle);
+
     DWORD bytesReturned;
-    DeviceIoControl(*handle, FSCTL_ALLOW_EXTENDED_DASD_IO, 
-                  NULL, 0, NULL, 0, &bytesReturned, NULL);
-    
-    BYTE testBuffer[SECTOR_SIZE];
-    DWORD bytesRead;
-    if (ReadFile(*handle, testBuffer, SECTOR_SIZE, &bytesRead, NULL)) {
-        printf("Uspesne nacitanych %lu bajtov zo zariadenia\n", bytesRead);
-        SetFilePointer(*handle, 0, NULL, FILE_BEGIN);
-    }
-    
+    DeviceIoControl(*handle, FSCTL_ALLOW_EXTENDED_DASD_IO, NULL, 0, NULL, 0, &bytesReturned, NULL);
+
     return true;
 }
 
 BOOL set_file_position(HANDLE handle, LARGE_INTEGER position) {
-    LONG highPart = position.HighPart;
-    
-    DWORD result = SetFilePointer(
-        handle, 
-        position.LowPart, 
-        &highPart, 
-        FILE_BEGIN
-    );
-    
-    if (result == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
-        return FALSE;
-    }
-    return TRUE;
-}
-
-void get_windows_error_message(char *buffer, size_t buffer_size) {
-    DWORD error_code = GetLastError();
-    
-    FormatMessageA(
-        FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL,
-        error_code,
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        buffer,
-        buffer_size,
-        NULL
-    );
-    
-    for (char *ptr = buffer; *ptr; ptr++) {
-        if (*ptr == '\r' || *ptr == '\n') {
-            *ptr = '\0';
-            break;
-        }
-    }
+    return SetFilePointerEx(handle, position, NULL, FILE_BEGIN);
 }
 
 void report_windows_error(const char *message) {
     char error_message[ERROR_BUFFER_SIZE] = {0};
     DWORD error_code = GetLastError();
-    
-    get_windows_error_message(error_message, ERROR_BUFFER_SIZE);
+
+    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, error_code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), error_message, ERROR_BUFFER_SIZE, NULL);
     fprintf(stderr, "%s: (%lu) %s\n", message, error_code, error_message);
 }
 
