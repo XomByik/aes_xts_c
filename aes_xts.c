@@ -44,34 +44,22 @@ int32_t aes_xts_crypt_sector(
     int encrypt,
     int key_bits 
 ) {
-    EVP_CIPHER_CTX *ctx;
-    uint8_t iv[IV_SIZE] = {0};
-    int len;
-    size_t key_size = key_bits / BITS_PER_BYTE;
-    uint8_t combined_key[KEY_SIZE * 2]; 
-    const EVP_CIPHER *cipher;
-    
-    #ifdef _WIN32
-    uint64_t effective_sector = sector_num + RESERVED_SECTORS;
-    #else
-    uint64_t effective_sector = sector_num;
-    #endif
-    
-    *(uint64_t*)iv = effective_sector;
-    
-    memcpy(combined_key, key1, key_size);
-    memcpy(combined_key + key_size, key2, key_size);
-
-    if (key_bits == 128) {
-        cipher = EVP_aes_128_xts();
-    } else {
-        cipher = EVP_aes_256_xts(); 
-    }
-    
-    if (!(ctx = EVP_CIPHER_CTX_new())) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
         print_openssl_error();
         return AES_XTS_ERROR_OPENSSL;
     }
+
+    uint8_t iv[IV_SIZE] = {0};
+    *(uint64_t*)iv = sector_num + (encrypt ? RESERVED_SECTORS : 0);
+
+    size_t key_size = key_bits / BITS_PER_BYTE;
+    uint8_t combined_key[KEY_SIZE * 2];
+    memcpy(combined_key, key1, key_size);
+    memcpy(combined_key + key_size, key2, key_size);
+
+    const EVP_CIPHER *cipher = (key_bits == 128) ? EVP_aes_128_xts() : EVP_aes_256_xts();
+    int len;
 
     if (encrypt) {
         if (EVP_EncryptInit_ex(ctx, cipher, NULL, combined_key, iv) != 1 ||
@@ -107,107 +95,89 @@ int derive_keys_from_password(
 ) {
     size_t key_len = key_bits / BITS_PER_BYTE;
     uint8_t combined_key[AES_KEY_LENGTH_256 * 2];
-    
+
     EVP_KDF *kdf = EVP_KDF_fetch(NULL, "ARGON2ID", NULL);
     if (!kdf) {
         fprintf(stderr, "Chyba: Argon2id nie je dostupny v tejto verzii OpenSSL\n");
         print_openssl_error();
         return AES_XTS_ERROR_OPENSSL;
     }
-    
+
     EVP_KDF_CTX *kctx = EVP_KDF_CTX_new(kdf);
     EVP_KDF_free(kdf);
-    
     if (!kctx) {
         print_openssl_error();
         return AES_XTS_ERROR_OPENSSL;
     }
-    
-    OSSL_PARAM params[6];
-    params[0] = OSSL_PARAM_construct_octet_string("pass", (void*)password, strlen((const char*)password));
-    params[1] = OSSL_PARAM_construct_octet_string("salt", (void*)salt, salt_len);
-    params[2] = OSSL_PARAM_construct_uint32("iterations", &iterations);
-    params[3] = OSSL_PARAM_construct_uint32("m_cost", &memory_cost);
-    params[4] = OSSL_PARAM_construct_uint32("parallelism", &(uint32_t){DEFAULT_PARALLELISM}); 
-    params[5] = OSSL_PARAM_construct_end();
-    
+
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_octet_string("pass", (void*)password, strlen((const char*)password)),
+        OSSL_PARAM_construct_octet_string("salt", (void*)salt, salt_len),
+        OSSL_PARAM_construct_uint32("iterations", &iterations),
+        OSSL_PARAM_construct_uint32("m_cost", &memory_cost),
+        OSSL_PARAM_construct_uint32("parallelism", &(uint32_t){DEFAULT_PARALLELISM}),
+        OSSL_PARAM_construct_end()
+    };
+
     if (EVP_KDF_derive(kctx, combined_key, key_len * 2, params) <= 0) {
         print_openssl_error();
         EVP_KDF_CTX_free(kctx);
         return AES_XTS_ERROR_OPENSSL;
     }
-    
+
     EVP_KDF_CTX_free(kctx);
-    
     memcpy(key1, combined_key, key_len);
     memcpy(key2, combined_key + key_len, key_len);
-    
+
     return AES_XTS_SUCCESS;
 }
 
 void read_password(uint8_t *password, size_t max_len, const char *prompt) {
     printf("%s", prompt);
     fflush(stdout);
-    
+
     size_t i = 0;
     int c;
-    
+
     #ifdef _WIN32
     HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
     DWORD mode = 0;
     GetConsoleMode(hStdin, &mode);
     SetConsoleMode(hStdin, mode & (~ENABLE_ECHO_INPUT));
-    
-    while (i < max_len - 1) {
-        c = _getch();
-        
-        if (c == '\r' || c == '\n') { 
-            break;
-        }
-        else if (c == '\b' && i > 0) {
+
+    while (i < max_len - 1 && (c = _getch()) != '\r' && c != '\n') {
+        if (c == '\b' && i > 0) {
             i--;
-            printf("\b \b"); 
-            fflush(stdout);
-        }
-        else if (c >= 32 && c <= 255) {
+            printf("\b \b");
+        } else if (c >= 32 && c <= 255) {
             password[i++] = c;
             printf("*");
-            fflush(stdout);
         }
     }
-    
+
     SetConsoleMode(hStdin, mode);
     #else
     struct termios old_term, new_term;
     tcgetattr(STDIN_FILENO, &old_term);
     new_term = old_term;
     new_term.c_lflag &= ~(ECHO);
-    
     tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
-    
-    while (i < max_len - 1) {
-        c = getchar();
-        
-        if (c == '\n' || c == EOF) {
-            break;
-        }
-        else if (c == 127 || c == '\b') { 
+
+    while (i < max_len - 1 && (c = getchar()) != '\n' && c != EOF) {
+        if (c == 127 || c == '\b') {
             if (i > 0) {
                 i--;
                 printf("\b \b");
-                fflush(stdout);
             }
-        }
-        else if (c >= 0 && c <= 255) {
+        } else if (c >= 0 && c <= 255) {
             password[i++] = c;
             printf("*");
-            fflush(stdout);
         }
     }
-    
+
     tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
     #endif
-    
+
     password[i] = '\0';
     printf("\n");
 }
@@ -303,25 +273,19 @@ static ssize_t read_sectors_block(device_context_t *ctx, uint8_t *buffer, size_t
 static void process_block(uint8_t *buffer, ssize_t bytesRead, int encrypt, int key_bits, const uint8_t *key1, const uint8_t *key2, uint64_t sector_offset) {
     size_t completeSectors = bytesRead / SECTOR_SIZE;
     size_t remainderBytes = bytesRead % SECTOR_SIZE;
-    
-    #ifdef _OPENMP
+
     #pragma omp parallel for
-    #endif
     for (size_t offset = 0; offset < completeSectors * SECTOR_SIZE; offset += SECTOR_SIZE) {
         uint64_t current_sector = sector_offset + (offset / SECTOR_SIZE);
         aes_xts_crypt_sector(key1, key2, current_sector, buffer + offset, SECTOR_SIZE, encrypt, key_bits);
     }
-    
+
     if (remainderBytes > 0) {
-        uint8_t *lastSectorBuffer = allocate_aligned_buffer(SECTOR_SIZE);
-        if (lastSectorBuffer) {
-            memset(lastSectorBuffer, 0, SECTOR_SIZE);
-            memcpy(lastSectorBuffer, buffer + completeSectors * SECTOR_SIZE, remainderBytes);
-            uint64_t last_sector = sector_offset + completeSectors;
-            aes_xts_crypt_sector(key1, key2, last_sector, lastSectorBuffer, SECTOR_SIZE, encrypt, key_bits);
-            memcpy(buffer + completeSectors * SECTOR_SIZE, lastSectorBuffer, remainderBytes);
-            secure_free_buffer(lastSectorBuffer, SECTOR_SIZE);
-        }
+        uint8_t lastSectorBuffer[SECTOR_SIZE] = {0};
+        memcpy(lastSectorBuffer, buffer + completeSectors * SECTOR_SIZE, remainderBytes);
+        uint64_t last_sector = sector_offset + completeSectors;
+        aes_xts_crypt_sector(key1, key2, last_sector, lastSectorBuffer, SECTOR_SIZE, encrypt, key_bits);
+        memcpy(buffer + completeSectors * SECTOR_SIZE, lastSectorBuffer, remainderBytes);
     }
 }
 
