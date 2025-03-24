@@ -6,4 +6,4 @@ aes_xts
 .vscode/
 disk.img
 create_partition.sh
-mnt
+mnt/
