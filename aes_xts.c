@@ -1,5 +1,4 @@
 #include "aes_xts.h"
-#include <ctype.h>
 
 void aes_xts_init(void) {
     OpenSSL_add_all_algorithms();
@@ -107,7 +106,7 @@ int derive_keys_from_password(
     uint32_t memory_cost
 ) {
     size_t key_len = key_bits / BITS_PER_BYTE;
-    uint8_t combined_key[KEY_SIZE_256 * 2];
+    uint8_t combined_key[AES_KEY_LENGTH_256 * 2];
     
     EVP_KDF *kdf = EVP_KDF_fetch(NULL, "ARGON2ID", NULL);
     if (!kdf) {
@@ -213,7 +212,7 @@ void read_password(uint8_t *password, size_t max_len, const char *prompt) {
     printf("\n");
 }
 
-int open_device(const char *path, device_context_t *ctx) {
+bool open_device(const char *path, device_context_t *ctx) {
     #ifdef _WIN32
     ctx->type = get_device_type(path);
     
@@ -223,20 +222,20 @@ int open_device(const char *path, device_context_t *ctx) {
     check_volume(path);
     
     if (!prepare_device_for_encryption(path, &ctx->handle)) {
-        return 0;
+        return false;
     }
     ctx->size = get_device_size(ctx->handle, ctx->type);
     return ctx->size.QuadPart != 0;
     #else
     if (is_partition_mounted(path)) {
         fprintf(stderr, "Chyba: Oddiel %s je pripojeny. Odpojte ho pred operaciou.\n", path);
-        return 0;
+        return false;
     }
     
     ctx->fd = open(path, O_RDWR);
     if (ctx->fd < 0) {
         perror("Chyba pri otvarani zariadenia");
-        return 0;
+        return false;
     }
     
     ctx->size = get_partition_size(ctx->fd);
@@ -521,19 +520,19 @@ int header_io_operation(device_context_t *ctx, xts_header_t *header, int write_o
     return result;
 }
 
-int set_position(device_context_t *ctx, uint64_t position) {
+bool set_position(device_context_t *ctx, uint64_t position) {
     #ifdef _WIN32
     LARGE_INTEGER pos;
     pos.QuadPart = (LONGLONG)position;
     if (!SetFilePointerEx(ctx->handle, pos, NULL, FILE_BEGIN)) {
-        return 0;
+        return false;
     }
     #else
     if (lseek(ctx->fd, (off_t)position, SEEK_SET) != (off_t)position) {
-        return 0;
+        return false;
     }
     #endif
-    return 1;
+    return true;
 }
 
 ssize_t read_data(device_context_t *ctx, void *buffer, size_t size) {
@@ -671,11 +670,11 @@ LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
 }
 
 /* Príprava zariadenia na šifrovanie - otvori zariadenie v správnom režime */
-int prepare_device_for_encryption(const char *path, HANDLE *handle) {
+bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
     // Kontrola oprávnení
     if (!is_admin()) {
         fprintf(stderr, "Chyba: Vyzaduju sa administratorske opravnenia\n");
-        return 0;
+        return false;
     }
     
     check_volume(path);
@@ -713,7 +712,7 @@ int prepare_device_for_encryption(const char *path, HANDLE *handle) {
     // Kontrola úspešnosti otvorenia
     if (*handle == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Zlyhalo otvorenie zariadenia: %lu\n", GetLastError());
-        return 0;
+        return false;
     }
     
     printf("Zariadenie uspesne otvorene\n");
@@ -792,7 +791,7 @@ void report_error(const char *message, int error_code) {
     #endif
 }
 
-int process_user_confirmation(const char *device_path, int key_bits) {
+bool process_user_confirmation(const char *device_path, int key_bits) {
     printf("UPOZORNENIE: Vsetky data na zariadeni %s budu zasifrovane s %d-bitovym klucom!\n", 
            device_path, key_bits);
     
@@ -801,7 +800,7 @@ int process_user_confirmation(const char *device_path, int key_bits) {
     char confirm;
     if (scanf(" %c", &confirm) != 1) {
         fprintf(stderr, "Chyba pri citani potvrdenia\n");
-        return 0;
+        return false;
     }
     
     int c;
@@ -810,12 +809,12 @@ int process_user_confirmation(const char *device_path, int key_bits) {
     return (confirm == 'a' || confirm == 'A' || confirm == 'y' || confirm == 'Y');
 }
 
-int process_password_input(uint8_t *password, size_t password_size, int verify) {
+bool process_password_input(uint8_t *password, size_t password_size, int verify) {
     read_password(password, password_size, "Zadajte heslo: ");
     
     if (strlen((char*)password) < MIN_PASSWORD_LENGTH) {
         fprintf(stderr, "Heslo musi mat aspon %d znakov\n", MIN_PASSWORD_LENGTH);
-        return 0;
+        return false;
     }
     
     if (verify) {
@@ -824,11 +823,11 @@ int process_password_input(uint8_t *password, size_t password_size, int verify) 
         
         if (strcmp((char*)password, (char*)confirm_password) != 0) {
             fprintf(stderr, "Hesla sa nezhoduju\n");
-            return 0;
+            return false;
         }
     }
     
-    return 1;
+    return true;
 }
 
 void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *salt, uint8_t *verification_data) {
@@ -840,7 +839,7 @@ void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *s
     params[0] = OSSL_PARAM_construct_utf8_string("digest", md_name, strlen(md_name));
     params[1] = OSSL_PARAM_construct_end();
 
-    size_t hmac_key_len = key_bits == 256 ? KEY_SIZE_256 : KEY_SIZE_128;
+    size_t hmac_key_len = key_bits == 256 ? AES_KEY_LENGTH_256 : AES_KEY_LENGTH_128;
     EVP_MAC_init(hmac_ctx, key, hmac_key_len, params);
 
     const char *verify_str = "AES-XTS-VERIFY";
@@ -856,16 +855,16 @@ void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *s
 
 #ifndef _WIN32
 
-int is_partition_mounted(const char *device_path) {
+bool is_partition_mounted(const char *device_path) {
     FILE *mtab = fopen("/proc/mounts", "r");
-    if (!mtab) return 0;
+    if (!mtab) return false;
 
     char line[ERROR_BUFFER_SIZE];
-    int mounted = 0;
+    bool mounted = false;
 
     while (fgets(line, sizeof(line), mtab)) {
         if (strstr(line, device_path)) {
-            mounted = 1;
+            mounted = true;
             break;
         }
     }
@@ -887,7 +886,7 @@ uint64_t get_partition_size(int fd) {
 #endif
 
 // Pomocná funkcia pre spracovanie argumentov príkazového riadka
-int parse_arguments(int argc, char *argv[], const char **operation, 
+bool parse_arguments(int argc, char *argv[], const char **operation, 
                     const char **device_path, int *key_bits) {
     if (argc < 3) {
         printf("AES-XTS Nastroj na sifrovanie diskov/oddielov\n");
@@ -900,7 +899,7 @@ int parse_arguments(int argc, char *argv[], const char **operation,
         printf("  %s encrypt 256 /dev/sdb1     # Sifrovanie s 256-bitovym klucom\n", argv[0]);
         printf("  %s encrypt /dev/sdb1         # Sifrovanie s predvolenou velkostou kluca (256-bit)\n", argv[0]);
         printf("  %s decrypt /dev/sdb1         # Desifrovanie (velkost kluca je nacitana z hlavicky)\n", argv[0]);
-        return 0;
+        return false;
     }
 
     *operation = argv[1];
@@ -914,10 +913,10 @@ int parse_arguments(int argc, char *argv[], const char **operation,
 
     if (!*device_path) {
         fprintf(stderr, "Chyba: Nie je zadana cesta k zariadeniu\n");
-        return 0;
+        return false;
     }
     
-    return 1;
+    return true;
 }
 
 // Funkcia pre šifrovanie zariadenia

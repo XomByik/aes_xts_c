@@ -4,9 +4,13 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#ifdef _OPENMP
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <openssl/err.h>
+#include <openssl/kdf.h>
+#include <ctype.h>
+#include <stdbool.h>
 #include <omp.h>
-#endif
 
 #ifdef _WIN32
     #include <windows.h>
@@ -23,24 +27,6 @@
     #include <linux/hdreg.h>
     #include <dirent.h>
 #endif
-
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/err.h>
-#include <openssl/kdf.h>
-
-#define SALT_LENGTH 16
-#define TWEAK_LENGTH 16
-#define AES_KEY_LENGTH_128 16
-#define AES_KEY_LENGTH_256 32
-
-typedef enum {
-    DEVICE_TYPE_UNKNOWN,
-    DEVICE_TYPE_DISK,
-    DEVICE_TYPE_VOLUME
-} device_type_t;
-
-#define BUFFER_SIZE (8 * 1024 * 1024)  
 
 /* ========== General Constants ========== */
 #ifndef min
@@ -69,8 +55,8 @@ typedef enum {
 #define IV_SIZE                   16
 #define VERIFICATION_DATA_SIZE    32
 #define KEY_SIZE                  32
-#define KEY_SIZE_128              16
-#define KEY_SIZE_256              32
+#define AES_KEY_LENGTH_128        16
+#define AES_KEY_LENGTH_256        32
 #define BITS_PER_BYTE             8
 #define DEFAULT_KEY_BITS          256
 #define ENCRYPT_MODE              1
@@ -103,6 +89,12 @@ typedef enum {
 #define SLEEP_FUNCTION            usleep(SLEEP_MS * 1000)
 #endif
 
+typedef enum {
+    DEVICE_TYPE_UNKNOWN,
+    DEVICE_TYPE_DISK,
+    DEVICE_TYPE_VOLUME
+} device_type_t;
+
 #pragma pack(push, 1)  
 typedef struct {
     char magic[6];
@@ -130,27 +122,6 @@ typedef struct {
     #endif
 } device_context_t;
 
-#ifndef _WIN32
-#pragma pack(push, 1)
-typedef struct {
-    uint8_t magic[8];              
-    uint8_t salt[SALT_LENGTH];     
-    uint8_t initial_tweak[TWEAK_LENGTH]; 
-    uint8_t verification_data[32];  
-    uint64_t partition_size;        
-    uint8_t reserved[64];           
-} PartitionHeader;
-#pragma pack(pop)
-#endif
-
-#define AES_XTS_SUCCESS 0
-#define AES_XTS_ERROR_OPENSSL -1
-#define AES_XTS_ERROR_IO -2
-#define AES_XTS_ERROR_PARAM -3
-#define AES_XTS_ERROR_MEMORY -4
-#define AES_XTS_ERROR_PERMISSION -5
-#define AES_XTS_ERROR_WRONG_PASSWORD -6
-
 void aes_xts_init(void);
 
 void aes_xts_cleanup(void);
@@ -170,11 +141,11 @@ int derive_keys_from_password(
 
 void read_password(uint8_t *password, size_t max_len, const char *prompt);
 
-int process_user_confirmation(const char *device_path, int key_bits);
+bool process_user_confirmation(const char *device_path, int key_bits);
 
-int process_password_input(uint8_t *password, size_t password_size, int verify);
+bool process_password_input(uint8_t *password, size_t password_size, int verify);
 
-int open_device(const char *path, device_context_t *ctx);
+bool open_device(const char *path, device_context_t *ctx);
 void close_device(device_context_t *ctx);
 
 int process_sectors(
@@ -200,10 +171,10 @@ int encrypt_device(device_context_t *ctx, const char *device_path, int key_bits)
 
 int decrypt_device(device_context_t *ctx);
 
-int parse_arguments(int argc, char *argv[], const char **operation, 
+bool parse_arguments(int argc, char *argv[], const char **operation, 
     const char **device_path, int *key_bits);
 
-int set_position(device_context_t *ctx, uint64_t position);
+bool set_position(device_context_t *ctx, uint64_t position);
 
 ssize_t read_data(device_context_t *ctx, void *buffer, size_t size);
 
@@ -218,13 +189,13 @@ void unlock_disk(HANDLE hDevice);
 
 device_type_t get_device_type(const char *path);
 
-int32_t prepare_device_for_encryption(const char *device_path, HANDLE *pDevice);
+bool prepare_device_for_encryption(const char *path, HANDLE *handle);
 
 LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t deviceType);
 void check_volume(const char *path);
 
 #else
-int is_partition_mounted(const char *device_path);
+bool is_partition_mounted(const char *device_path);
 
 uint64_t get_partition_size(int fd);
 
