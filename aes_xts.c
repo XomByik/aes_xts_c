@@ -519,24 +519,13 @@ ssize_t write_data(device_context_t *ctx, const void *buffer, size_t size) {
 
 #ifdef _WIN32
 
-typedef struct {
-    const char *device_path;
-    HANDLE handle;
-    device_type_t type;
-    LARGE_INTEGER size;
-    BOOL is_mounted;
-} win_device_context_t;
-
 BOOL is_admin(void) {
     BOOL isAdmin = FALSE;
     SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
     PSID AdminGroup;
     
-    if (AllocateAndInitializeSid(&NtAuthority, 2,
-                               SECURITY_BUILTIN_DOMAIN_RID,
-                               DOMAIN_ALIAS_RID_ADMINS,
-                               0, 0, 0, 0, 0, 0,
-                               &AdminGroup)) {
+    if (AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                               DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &AdminGroup)) {
         CheckTokenMembership(NULL, AdminGroup, &isAdmin);
         FreeSid(AdminGroup);
     }
@@ -548,24 +537,15 @@ device_type_t get_device_type(const char *path) {
             DEVICE_TYPE_DISK : DEVICE_TYPE_VOLUME;
 }
 
-BOOL lock_volume(HANDLE hDevice) {
+BOOL lock_and_dismount_volume(HANDLE hDevice) {
     DWORD bytesReturned;
-    return DeviceIoControl(hDevice, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
-}
-
-BOOL dismount_volume(HANDLE hDevice) {
-    DWORD bytesReturned;
-    BOOL result = DeviceIoControl(hDevice, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    BOOL locked = DeviceIoControl(hDevice, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
+    BOOL dismounted = DeviceIoControl(hDevice, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &bytesReturned, NULL);
     
-    if (!result)
+    if (!dismounted)
         fprintf(stderr, "Upozornenie: Nepodarilo sa odpojit zvazok: %lu\n", GetLastError());
     
-    return result;
-}
-
-BOOL lock_and_dismount(HANDLE hDevice) {
-    lock_volume(hDevice);
-    return dismount_volume(hDevice);
+    return locked && dismounted;
 }
 
 void unlock_disk(HANDLE hDevice) {
@@ -577,41 +557,35 @@ void unlock_disk(HANDLE hDevice) {
 
 void check_volume(const char *path) {
     if (path[0] == '\\' && path[1] == '\\' && path[2] == '.' && path[3] == '\\' && isalpha(path[4])) {
-        char drive[3] = { path[4], ':', 0 };
-        printf("Priprava jednotky %s na pristup\n", drive);
+        printf("Priprava jednotky %c: na pristup\n", path[4]);
     }
 }
 
 LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
     LARGE_INTEGER size = {0};
     DWORD bytesReturned;
-    BOOL success = FALSE;
     
     if (type == DEVICE_TYPE_VOLUME) {
         GET_LENGTH_INFORMATION lengthInfo;
-        success = DeviceIoControl(hDevice, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0,
-                          &lengthInfo, sizeof(lengthInfo), &bytesReturned, NULL);
-        if (success) {
+        if (DeviceIoControl(hDevice, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0,
+                          &lengthInfo, sizeof(lengthInfo), &bytesReturned, NULL)) {
             size.QuadPart = lengthInfo.Length.QuadPart;
+            printf("Velkost zariadenia: %lld bajtov\n", size.QuadPart);
+            return size;
         }
     } else {
         DISK_GEOMETRY_EX diskGeometry;
-        success = DeviceIoControl(hDevice, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0,
-                          &diskGeometry, sizeof(diskGeometry), &bytesReturned, NULL);
-        if (success) {
+        if (DeviceIoControl(hDevice, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0,
+                          &diskGeometry, sizeof(diskGeometry), &bytesReturned, NULL)) {
             size.QuadPart = diskGeometry.DiskSize.QuadPart;
+            printf("Velkost zariadenia: %lld bajtov\n", size.QuadPart);
+            return size;
         }
     }
 
-    if (!success) {
-        LARGE_INTEGER zero = {0};
-        if (SetFilePointerEx(hDevice, zero, &size, FILE_END)) {
-            SetFilePointerEx(hDevice, zero, NULL, FILE_BEGIN);
-            success = TRUE;
-        }
-    }
-    
-    if (success) {
+    LARGE_INTEGER zero = {0};
+    if (SetFilePointerEx(hDevice, zero, &size, FILE_END)) {
+        SetFilePointerEx(hDevice, zero, NULL, FILE_BEGIN);
         printf("Velkost zariadenia: %lld bajtov\n", size.QuadPart);
     } else {
         fprintf(stderr, "Zlyhalo zistenie velkosti zariadenia: %lu\n", GetLastError());
@@ -620,17 +594,31 @@ LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
     return size;
 }
 
-BOOL try_open_device(const char *path, DWORD shareMode, DWORD creationFlags, HANDLE *handle) {
-    *handle = CreateFileA(
+HANDLE open_device_with_retry(const char *path) {
+    HANDLE handle = CreateFileA(
         path,
         GENERIC_READ | GENERIC_WRITE,
-        shareMode,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
         OPEN_EXISTING,
-        creationFlags,
+        0,
         NULL
     );
-    return (*handle != INVALID_HANDLE_VALUE);
+    
+    if (handle == INVALID_HANDLE_VALUE) {
+        printf("Pokus o otvorenie s exkluzivnym pristupom...\n");
+        handle = CreateFileA(
+            path,
+            GENERIC_READ | GENERIC_WRITE,
+             0,
+            NULL,
+            OPEN_EXISTING,
+            FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
+            NULL
+        );
+    }
+    
+    return handle;
 }
 
 bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
@@ -640,22 +628,7 @@ bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
     }
     
     check_volume(path);
-    
-    DWORD shareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
-    DWORD creationFlags = 0;
-    int attempts = 0;
-    
-    while (attempts < 2) {
-        if (try_open_device(path, shareMode, creationFlags, handle)) {
-            break;
-        }
-        if (attempts == 0) {
-            printf("Pokus o otvorenie s exkluzivnym pristupom...\n");
-            shareMode = 0;
-            creationFlags = FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH;
-        }
-        attempts++;
-    }
+    *handle = open_device_with_retry(path);
     
     if (*handle == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Zlyhalo otvorenie zariadenia: %lu\n", GetLastError());
@@ -663,9 +636,9 @@ bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
     }
     
     printf("Zariadenie uspesne otvorene\n");
-    
     printf("Pokus o odpojenie zvazku...\n");
-    if (lock_and_dismount(*handle)) {
+    
+    if (lock_and_dismount_volume(*handle)) {
         printf("Zvazok uspesne odpojeny\n");
     }
     
@@ -680,19 +653,28 @@ bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
         SetFilePointer(*handle, 0, NULL, FILE_BEGIN);
     }
     
-    return (*handle != INVALID_HANDLE_VALUE);
+    return true;
 }
 
 BOOL set_file_position(HANDLE handle, LARGE_INTEGER position) {
-    if (SetFilePointer(handle, (LONG)position.QuadPart, 
-                      (PLONG)(&position.HighPart), FILE_BEGIN) == INVALID_SET_FILE_POINTER && 
-        GetLastError() != NO_ERROR) {
+    LONG highPart = position.HighPart;
+    
+    DWORD result = SetFilePointer(
+        handle, 
+        position.LowPart, 
+        &highPart, 
+        FILE_BEGIN
+    );
+    
+    if (result == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
         return FALSE;
     }
     return TRUE;
 }
 
-void win_get_error_message(DWORD error_code, char *buffer, size_t buffer_size) {
+void get_windows_error_message(char *buffer, size_t buffer_size) {
+    DWORD error_code = GetLastError();
+    
     FormatMessageA(
         FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         NULL,
@@ -703,19 +685,22 @@ void win_get_error_message(DWORD error_code, char *buffer, size_t buffer_size) {
         NULL
     );
     
-    char *newline = strchr(buffer, '\r');
-    if (newline) *newline = '\0';
-    newline = strchr(buffer, '\n');
-    if (newline) *newline = '\0';
+    for (char *ptr = buffer; *ptr; ptr++) {
+        if (*ptr == '\r' || *ptr == '\n') {
+            *ptr = '\0';
+            break;
+        }
+    }
 }
 
-void win_report_error(const char *message) {
-    DWORD error_code = GetLastError();
+void report_windows_error(const char *message) {
     char error_message[ERROR_BUFFER_SIZE] = {0};
+    DWORD error_code = GetLastError();
     
-    win_get_error_message(error_code, error_message, ERROR_BUFFER_SIZE);
+    get_windows_error_message(error_message, ERROR_BUFFER_SIZE);
     fprintf(stderr, "%s: (%lu) %s\n", message, error_code, error_message);
 }
+
 #endif
 
 void report_error(const char *message, int error_code) {
