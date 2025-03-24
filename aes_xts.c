@@ -290,6 +290,54 @@ void secure_free_buffer(uint8_t* buffer, size_t size) {
     }
 }
 
+// Nova podfunkcia: precita blok dat zo zariadenia
+static ssize_t read_sectors_block(device_context_t *ctx, uint8_t *buffer, size_t max_size, uint64_t currentOffset) {
+    size_t bytesToRead = max_size;
+    #ifdef _WIN32
+    if (currentOffset + bytesToRead > (uint64_t)ctx->size.QuadPart)
+        bytesToRead = ctx->size.QuadPart - currentOffset;
+    #else
+    if (currentOffset + bytesToRead > ctx->size)
+        bytesToRead = ctx->size - currentOffset;
+    #endif
+    return read_data(ctx, buffer, bytesToRead);
+}
+
+// Nova podfunkcia: spracuje cely blok (cele sektory aj zvisle bajty)
+static void process_block(uint8_t *buffer, ssize_t bytesRead, int encrypt, int key_bits, const uint8_t *key1, const uint8_t *key2, uint64_t sector_offset) {
+    size_t completeSectors = bytesRead / SECTOR_SIZE;
+    size_t remainderBytes = bytesRead % SECTOR_SIZE;
+    
+    #ifdef _OPENMP
+    #pragma omp parallel for
+    #endif
+    for (size_t offset = 0; offset < completeSectors * SECTOR_SIZE; offset += SECTOR_SIZE) {
+        uint64_t current_sector = sector_offset + (offset / SECTOR_SIZE);
+        aes_xts_crypt_sector(key1, key2, current_sector, buffer + offset, SECTOR_SIZE, encrypt, key_bits);
+    }
+    
+    if (remainderBytes > 0) {
+        uint8_t *lastSectorBuffer = allocate_aligned_buffer(SECTOR_SIZE);
+        if (lastSectorBuffer) {
+            memset(lastSectorBuffer, 0, SECTOR_SIZE);
+            memcpy(lastSectorBuffer, buffer + completeSectors * SECTOR_SIZE, remainderBytes);
+            uint64_t last_sector = sector_offset + completeSectors;
+            aes_xts_crypt_sector(key1, key2, last_sector, lastSectorBuffer, SECTOR_SIZE, encrypt, key_bits);
+            memcpy(buffer + completeSectors * SECTOR_SIZE, lastSectorBuffer, remainderBytes);
+            secure_free_buffer(lastSectorBuffer, SECTOR_SIZE);
+        }
+    }
+}
+
+// Nova podfunkcia: zapise blok dat na zariadenie
+static ssize_t write_sectors_block(device_context_t *ctx, uint8_t *buffer, size_t bytesToWrite, uint64_t currentOffset) {
+    if (!set_position(ctx, currentOffset)) {
+        return -1;
+    }
+    return write_data(ctx, buffer, bytesToWrite);
+}
+
+// Refaktorizovana funkcia process_sectors
 int process_sectors(
     device_context_t *ctx,
     uint8_t *key1,
@@ -304,104 +352,42 @@ int process_sectors(
     uint64_t currentOffset, startOffset;
     ssize_t bytesRead, bytesWritten;
     
-    // Inicializácia pre všetky platformy
+    // Inicializacia pre vsetky platformy
     startOffset = start_sector * SECTOR_SIZE;
     currentOffset = startOffset;
     
     buffer = allocate_aligned_buffer(BUFFER_SIZE + SECTOR_SIZE);
-    
     if (!buffer) {
         fprintf(stderr, "Zlyhala alokacia pamate\n");
         return AES_XTS_ERROR_IO;
     }
-    
     memset(buffer, 0, BUFFER_SIZE + SECTOR_SIZE);
     
-    // Nastavenie počiatočnej pozície pomocou abstraktnej funkcie
     if (!set_position(ctx, startOffset)) {
         fprintf(stderr, "Chyba pri nastaveni pozicie v zariadeni\n");
         secure_free_buffer(buffer, BUFFER_SIZE + SECTOR_SIZE);
         return AES_XTS_ERROR_IO;
     }
     
-    // Výpočet celkovej veľkosti bez rozlišovania platforiem
     #ifdef _WIN32
     total_size = ctx->size.QuadPart - startOffset;
     #else
     total_size = ctx->size - startOffset;
     #endif
 
-    while (1) {
-        // Kontrola konca spracovania
-        if (currentOffset >= startOffset + total_size)
+    while (currentOffset < startOffset + total_size) {
+        bytesRead = read_sectors_block(ctx, buffer, BUFFER_SIZE, currentOffset);
+        if (bytesRead <= 0)
             break;
             
-        // Výpočet koľko dát čítať
-        size_t bytesToRead = BUFFER_SIZE;
-        #ifdef _WIN32
-        if (currentOffset + bytesToRead > (uint64_t)ctx->size.QuadPart) {
-            bytesToRead = (uint64_t)ctx->size.QuadPart - currentOffset;
-        }
-        #else
-        if (currentOffset + bytesToRead > ctx->size) {
-            bytesToRead = ctx->size - currentOffset;
-        }
-        #endif
-        
-        // Čítanie dát pomocou abstraktnej funkcie
-        bytesRead = read_data(ctx, buffer, bytesToRead);
-        
-        if (bytesRead <= 0) break;
+        // Spracovanie bloku s datami
+        process_block(buffer, bytesRead, encrypt, key_bits, key1, key2, sector_num);
         
         size_t completeSectors = bytesRead / SECTOR_SIZE;
         size_t remainderBytes = bytesRead % SECTOR_SIZE;
+        size_t bytesToWrite = completeSectors * SECTOR_SIZE + remainderBytes;
         
-        // Spracovanie kompletných sektorov
-        #ifdef _OPENMP
-        #pragma omp parallel for
-        #endif
-        for(size_t offset = 0; offset < completeSectors * SECTOR_SIZE; offset += SECTOR_SIZE) {
-            uint64_t current_sector = sector_num + (offset / SECTOR_SIZE);
-            if (encrypt)
-                aes_xts_crypt_sector(key1, key2, current_sector, buffer + offset, SECTOR_SIZE, ENCRYPT_MODE, key_bits);
-            else
-                aes_xts_crypt_sector(key1, key2, current_sector, buffer + offset, SECTOR_SIZE, DECRYPT_MODE, key_bits);
-        }
-        
-        // Spracovanie zvyšných bytov
-        if (remainderBytes > 0) {
-            uint8_t *lastSectorBuffer = allocate_aligned_buffer(SECTOR_SIZE);
-            
-            if (lastSectorBuffer) {
-                memset(lastSectorBuffer, 0, SECTOR_SIZE);
-                memcpy(lastSectorBuffer, buffer + completeSectors * SECTOR_SIZE, remainderBytes);
-                
-                uint64_t last_sector = sector_num + completeSectors;
-                if (encrypt)
-                    aes_xts_crypt_sector(key1, key2, last_sector, lastSectorBuffer, SECTOR_SIZE, ENCRYPT_MODE, key_bits);
-                else
-                    aes_xts_crypt_sector(key1, key2, last_sector, lastSectorBuffer, SECTOR_SIZE, ENCRYPT_MODE, key_bits);
-                
-                memcpy(buffer + completeSectors * SECTOR_SIZE, lastSectorBuffer, remainderBytes);
-                
-                secure_free_buffer(lastSectorBuffer, SECTOR_SIZE);
-            }
-        }
-        
-        // Nastavenie pozície pre zápis
-        if (!set_position(ctx, currentOffset)) {
-            fprintf(stderr, "Chyba pri nastaveni pozicie pre zapis\n");
-            secure_free_buffer(buffer, BUFFER_SIZE + SECTOR_SIZE);
-            return AES_XTS_ERROR_IO;
-        }
-        
-        size_t bytesToWrite = completeSectors * SECTOR_SIZE;
-        if (remainderBytes > 0) {
-            bytesToWrite += remainderBytes;
-        }
-        
-        // Zápis dát pomocou abstraktnej funkcie
-        bytesWritten = write_data(ctx, buffer, bytesToWrite);
+        bytesWritten = write_sectors_block(ctx, buffer, bytesToWrite, currentOffset);
         if (bytesWritten != (ssize_t)bytesToWrite) {
             fprintf(stderr, "Chyba pri zapise dat\n");
             secure_free_buffer(buffer, BUFFER_SIZE + SECTOR_SIZE);
@@ -410,8 +396,7 @@ int process_sectors(
         
         currentOffset += bytesWritten;
         sector_num += completeSectors;
-
-        // Zobrazenie pokroku
+        
         uint64_t progress = currentOffset - startOffset;
         show_progress(progress, total_size, sector_num);
     }
@@ -420,41 +405,31 @@ int process_sectors(
     return AES_XTS_SUCCESS;
 }
 
-int header_io_operation(device_context_t *ctx, xts_header_t *header, int write_operation) {
-    uint8_t *sector = NULL;
-    int result = AES_XTS_ERROR_IO;
-    
-    // Spoločný kód pre alokáciu pamäte
-    sector = allocate_aligned_buffer(SECTOR_SIZE);
+int header_io(device_context_t *ctx, xts_header_t *header, int isWrite) {
+    uint8_t *sector = allocate_aligned_buffer(SECTOR_SIZE);
     if (!sector) {
-        fprintf(stderr, "Zlyhala alokacia vyrovanavacej pamate pre hlavicku\n");
+        fprintf(stderr, "Zlyhala alokacia vyrobnavej pamate pre hlavicku\n");
         return AES_XTS_ERROR_MEMORY;
     }
-    
     memset(sector, 0, SECTOR_SIZE);
-    
-    // Príprava dát pre zápis
-    if (write_operation) {
+
+    if (isWrite) {
         memcpy(sector, header, sizeof(xts_header_t));
-        printf("Zapisovanie hlavicky - magic: %.6s verzia: %u\n", 
-               header->magic, header->version);
+        printf("Zapisovanie hlavicky - magic: %.6s verzia: %u\n", header->magic, header->version);
     }
-    
-    // Platformovo-špecifický presun na pozíciu a I/O operácia
+
     #ifdef _WIN32
     {
         DWORD bytesTransferred;
-        LARGE_INTEGER offset;
-        offset.QuadPart = (LONGLONG)HEADER_SECTOR * SECTOR_SIZE;
-        
-        if (!set_file_position(ctx->handle, offset)) {
+        LARGE_INTEGER pos;
+        pos.QuadPart = (LONGLONG)HEADER_SECTOR * SECTOR_SIZE;
+        if (!set_file_position(ctx->handle, pos)) {
             fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky\n");
             secure_free_buffer(sector, SECTOR_SIZE);
             return AES_XTS_ERROR_IO;
         }
         
-        if (write_operation) {
-            // Zápis hlavičky (Windows)
+        if (isWrite) {
             if (!WriteFile(ctx->handle, sector, SECTOR_SIZE, &bytesTransferred, NULL) ||
                 bytesTransferred != SECTOR_SIZE) {
                 fprintf(stderr, "Zlyhalo zapisanie hlavicky\n");
@@ -463,61 +438,52 @@ int header_io_operation(device_context_t *ctx, xts_header_t *header, int write_o
             }
             FlushFileBuffers(ctx->handle);
         } else {
-            // Čítanie hlavičky (Windows)
             if (!ReadFile(ctx->handle, sector, SECTOR_SIZE, &bytesTransferred, NULL) ||
                 bytesTransferred != SECTOR_SIZE) {
                 fprintf(stderr, "Zlyhalo citanie hlavicky\n");
                 secure_free_buffer(sector, SECTOR_SIZE);
                 return AES_XTS_ERROR_IO;
             }
-            
             memcpy(header, sector, sizeof(xts_header_t));
         }
     }
     #else
     {
-        uint64_t offset = (uint64_t)HEADER_SECTOR * SECTOR_SIZE;
-        ssize_t bytesTransferred;
-        
-        if (lseek(ctx->fd, (off_t)offset, SEEK_SET) != (off_t)offset) {
+        off_t pos = HEADER_SECTOR * SECTOR_SIZE;
+        if (lseek(ctx->fd, pos, SEEK_SET) != pos) {
             fprintf(stderr, "Zlyhalo vyhladavanie pozicie hlavicky\n");
             secure_free_buffer(sector, SECTOR_SIZE);
             return AES_XTS_ERROR_IO;
         }
-        
-        if (write_operation) {
-            // Zápis hlavičky (Linux)
-            bytesTransferred = write(ctx->fd, sector, SECTOR_SIZE);
-            if (bytesTransferred != SECTOR_SIZE) {
+        ssize_t bytes;
+        if (isWrite) {
+            bytes = write(ctx->fd, sector, SECTOR_SIZE);
+            if (bytes != SECTOR_SIZE) {
                 fprintf(stderr, "Zlyhalo zapisanie hlavicky\n");
                 secure_free_buffer(sector, SECTOR_SIZE);
                 return AES_XTS_ERROR_IO;
             }
             fsync(ctx->fd);
         } else {
-            // Čítanie hlavičky (Linux)
-            bytesTransferred = read(ctx->fd, sector, SECTOR_SIZE);
-            if (bytesTransferred != SECTOR_SIZE) {
+            bytes = read(ctx->fd, sector, SECTOR_SIZE);
+            if (bytes != SECTOR_SIZE) {
                 fprintf(stderr, "Zlyhalo citanie hlavicky\n");
                 secure_free_buffer(sector, SECTOR_SIZE);
                 return AES_XTS_ERROR_IO;
             }
-            
             memcpy(header, sector, sizeof(xts_header_t));
         }
     }
     #endif
-    
-    // Spoločný kód pre verifikáciu hlavičky pri čítaní
-    if (!write_operation && memcmp(header->magic, HEADER_MAGIC, HEADER_MAGIC_SIZE) != 0) {
+
+    if (!isWrite && memcmp(header->magic, HEADER_MAGIC, HEADER_MAGIC_SIZE) != 0) {
         fprintf(stderr, "Neplatna magicka hodnota v hlavicke\n");
         secure_free_buffer(sector, SECTOR_SIZE);
         return AES_XTS_ERROR_PARAM;
     }
     
-    result = AES_XTS_SUCCESS;
     secure_free_buffer(sector, SECTOR_SIZE);
-    return result;
+    return AES_XTS_SUCCESS;
 }
 
 bool set_position(device_context_t *ctx, uint64_t position) {
@@ -560,7 +526,6 @@ ssize_t write_data(device_context_t *ctx, const void *buffer, size_t size) {
 }
 
 #ifdef _WIN32
-/* Windows-špecifická implementácia zariadení */
 
 typedef struct {
     const char *device_path;
@@ -570,7 +535,6 @@ typedef struct {
     BOOL is_mounted;
 } win_device_context_t;
 
-/* Kontrola administrátorských oprávnení */
 BOOL is_admin(void) {
     BOOL isAdmin = FALSE;
     SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
@@ -587,7 +551,6 @@ BOOL is_admin(void) {
     return isAdmin;
 }
 
-/* Funkcie pre správu zariadení */
 device_type_t get_device_type(const char *path) {
     return (strncmp(path, "\\\\.\\PhysicalDrive", 17) == 0) ? 
             DEVICE_TYPE_DISK : DEVICE_TYPE_VOLUME;
@@ -620,7 +583,6 @@ void unlock_disk(HANDLE hDevice) {
     }
 }
 
-/* Detekcia a príprava zväzku */
 void check_volume(const char *path) {
     if (path[0] == '\\' && path[1] == '\\' && path[2] == '.' && path[3] == '\\' && isalpha(path[4])) {
         char drive[3] = { path[4], ':', 0 };
@@ -628,7 +590,6 @@ void check_volume(const char *path) {
     }
 }
 
-/* Získanie veľkosti zariadenia - podporuje fyzické zariadenia aj logické zväzky */
 LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
     LARGE_INTEGER size = {0};
     DWORD bytesReturned;
@@ -651,7 +612,6 @@ LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
         }
     }
 
-    // Záložná metóda ak IOCTL zlyhá
     if (!success) {
         LARGE_INTEGER zero = {0};
         if (SetFilePointerEx(hDevice, zero, &size, FILE_END)) {
@@ -669,9 +629,20 @@ LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
     return size;
 }
 
-/* Príprava zariadenia na šifrovanie - otvori zariadenie v správnom režime */
+BOOL try_open_device(const char *path, DWORD shareMode, DWORD creationFlags, HANDLE *handle) {
+    *handle = CreateFileA(
+        path,
+        GENERIC_READ | GENERIC_WRITE,
+        shareMode,
+        NULL,
+        OPEN_EXISTING,
+        creationFlags,
+        NULL
+    );
+    return (*handle != INVALID_HANDLE_VALUE);
+}
+
 bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
-    // Kontrola oprávnení
     if (!is_admin()) {
         fprintf(stderr, "Chyba: Vyzaduju sa administratorske opravnenia\n");
         return false;
@@ -679,37 +650,22 @@ bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
     
     check_volume(path);
     
-    // Skúsime dva prístupy k otvoreniu zariadenia
     DWORD shareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
     DWORD creationFlags = 0;
     int attempts = 0;
     
-    do {
-        *handle = CreateFileA(
-            path,
-            GENERIC_READ | GENERIC_WRITE,
-            shareMode,
-            NULL,
-            OPEN_EXISTING,
-            creationFlags,
-            NULL
-        );
-        
-        if (*handle != INVALID_HANDLE_VALUE) {
+    while (attempts < 2) {
+        if (try_open_device(path, shareMode, creationFlags, handle)) {
             break;
         }
-        
-        // Pre druhý pokus zmeníme parametre pre exkluzívny prístup
         if (attempts == 0) {
             printf("Pokus o otvorenie s exkluzivnym pristupom...\n");
             shareMode = 0;
             creationFlags = FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH;
         }
-        
         attempts++;
-    } while (attempts < 2);
+    }
     
-    // Kontrola úspešnosti otvorenia
     if (*handle == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Zlyhalo otvorenie zariadenia: %lu\n", GetLastError());
         return false;
@@ -717,18 +673,15 @@ bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
     
     printf("Zariadenie uspesne otvorene\n");
     
-    // Odpojenie zväzku pre bezpečný prístup
     printf("Pokus o odpojenie zvazku...\n");
     if (lock_and_dismount(*handle)) {
         printf("Zvazok uspesne odpojeny\n");
     }
     
-    // Povolenie rozšíreného prístupu k zariadeniu
     DWORD bytesReturned;
     DeviceIoControl(*handle, FSCTL_ALLOW_EXTENDED_DASD_IO, 
                   NULL, 0, NULL, 0, &bytesReturned, NULL);
     
-    // Test čítania zo zariadenia
     BYTE testBuffer[SECTOR_SIZE];
     DWORD bytesRead;
     if (ReadFile(*handle, testBuffer, SECTOR_SIZE, &bytesRead, NULL)) {
@@ -739,7 +692,6 @@ bool prepare_device_for_encryption(const char *path, HANDLE *handle) {
     return (*handle != INVALID_HANDLE_VALUE);
 }
 
-/* Nastavenie pozície v súbore/zariadení - wrapper pre SetFilePointer */
 BOOL set_file_position(HANDLE handle, LARGE_INTEGER position) {
     if (SetFilePointer(handle, (LONG)position.QuadPart, 
                       (PLONG)(&position.HighPart), FILE_BEGIN) == INVALID_SET_FILE_POINTER && 
@@ -749,7 +701,6 @@ BOOL set_file_position(HANDLE handle, LARGE_INTEGER position) {
     return TRUE;
 }
 
-/* Získanie formátovanej chybovej správy Windows */
 void win_get_error_message(DWORD error_code, char *buffer, size_t buffer_size) {
     FormatMessageA(
         FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
@@ -761,14 +712,12 @@ void win_get_error_message(DWORD error_code, char *buffer, size_t buffer_size) {
         NULL
     );
     
-    // Odstránenie nových riadkov na konci správy
     char *newline = strchr(buffer, '\r');
     if (newline) *newline = '\0';
     newline = strchr(buffer, '\n');
     if (newline) *newline = '\0';
 }
 
-/* Zobrazí chybovú správu Windows */
 void win_report_error(const char *message) {
     DWORD error_code = GetLastError();
     char error_message[ERROR_BUFFER_SIZE] = {0};
@@ -780,7 +729,7 @@ void win_report_error(const char *message) {
 
 void report_error(const char *message, int error_code) {
     #ifdef _WIN32
-    (void)error_code; // Označenie parametra ako zámerne nevyužitého
+    (void)error_code; 
     fprintf(stderr, "%s: %lu\n", message, GetLastError());
     #else
     if (error_code) {
@@ -885,7 +834,6 @@ uint64_t get_partition_size(int fd) {
 }
 #endif
 
-// Pomocná funkcia pre spracovanie argumentov príkazového riadka
 bool parse_arguments(int argc, char *argv[], const char **operation, 
                     const char **device_path, int *key_bits) {
     if (argc < 3) {
@@ -919,27 +867,22 @@ bool parse_arguments(int argc, char *argv[], const char **operation,
     return true;
 }
 
-// Funkcia pre šifrovanie zariadenia
 int encrypt_device(device_context_t *ctx, const char *device_path, int key_bits) {
     uint8_t password[PASSWORD_BUFFER_SIZE];
     uint8_t key1[KEY_SIZE], key2[KEY_SIZE];
     xts_header_t header;
     
-    // Informácia o použitom šifrovaní
     printf("Pouziva sa %d-bitove sifrovanie\n", key_bits);
     
-    // Potvrdenie užívateľa
     if (!process_user_confirmation(device_path, key_bits)) {
         printf("Sifrovanie zrusene.\n");
         return 0;
     }
     
-    // Získanie hesla od užívateľa
     if (!process_password_input(password, sizeof(password), 1)) {
         return 0;
     }
 
-    // Inicializácia hlavičky
     memset(&header, 0, sizeof(header));
     memcpy(header.magic, HEADER_MAGIC, HEADER_MAGIC_SIZE);
     header.version = HEADER_VERSION;
@@ -949,61 +892,51 @@ int encrypt_device(device_context_t *ctx, const char *device_path, int key_bits)
     header.memory_cost = DEFAULT_MEMORY_COST;
     header.key_bits = key_bits;
 
-    // Generovanie náhodnej soli
     if (!RAND_bytes(header.salt, SALT_LENGTH)) {
         print_openssl_error();
         return 0;
     }
 
-    // Derivácia kľúčov z hesla
     if (derive_keys_from_password(password, header.salt, SALT_LENGTH,
                                 key1, key2, key_bits,
                                 header.iterations, header.memory_cost) != AES_XTS_SUCCESS) {
         return 0;
     }
     
-    // Vytvorenie verifikačných dát
     create_verification_data(key1, key_bits, header.salt, header.verification_data);
     printf("Verifikacne data vytvorene\n");
 
-    // Zápis hlavičky
-    if (header_io_operation(ctx, &header, 1) != AES_XTS_SUCCESS) {
+    if (header_io(ctx, &header, 1) != AES_XTS_SUCCESS) {
         fprintf(stderr, "Zlyhalo zapisanie hlavicky\n");
         return 0;
     }
 
-    // Spracovanie sektorov
     return process_sectors(ctx, key1, key2, header.start_sector, ENCRYPT_MODE, key_bits);
 }
 
-// Funkcia pre dešifrovanie zariadenia
 int decrypt_device(device_context_t *ctx) {
     uint8_t password[PASSWORD_BUFFER_SIZE];
     uint8_t key1[KEY_SIZE], key2[KEY_SIZE];
     xts_header_t header;
     int result;
     
-    // Načítanie hlavičky
-    if (header_io_operation(ctx, &header, 0) != AES_XTS_SUCCESS) {
+    if (header_io(ctx, &header, 0) != AES_XTS_SUCCESS) {
         fprintf(stderr, "Zlyhalo nacitanie hlavicky alebo neplatna hlavicka\n");
         return 0;
     }
     
-    // Získanie hesla od užívateľa
     if (!process_password_input(password, sizeof(password), 0)) {
         return 0;
     }
 
     printf("Pouziva sa %d-bitove sifrovanie (z hlavicky)\n", header.key_bits);
 
-    // Derivácia kľúčov z hesla
     if (derive_keys_from_password(password, header.salt, SALT_LENGTH,
                                 key1, key2, header.key_bits, 
                                 header.iterations, header.memory_cost) != AES_XTS_SUCCESS) {
         return 0;
     }
 
-    // Overenie správnosti hesla
     uint8_t verification_check[VERIFICATION_DATA_SIZE];
     create_verification_data(key1, header.key_bits, header.salt, verification_check);
 
@@ -1014,7 +947,6 @@ int decrypt_device(device_context_t *ctx) {
 
     printf("Overenie hesla uspesne\n");
     
-    // Spracovanie sektorov
     result = process_sectors(ctx, key1, key2, header.start_sector, DECRYPT_MODE, header.key_bits);
     
     return result;
