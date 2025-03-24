@@ -198,7 +198,7 @@ void read_password(uint8_t *password, size_t max_len, const char *prompt) {
                 fflush(stdout);
             }
         }
-        else if (c >= 0 && c <= 255) { // Akceptuj všetky bajty
+        else if (c >= 0 && c <= 255) {
             password[i++] = c;
             printf("*");
             fflush(stdout);
@@ -265,7 +265,6 @@ uint8_t* allocate_aligned_buffer(size_t size) {
         memset(buffer, 0, size);
     }
     #else
-    // Na Linuxe používame posix_memalign
     uint8_t* buffer = NULL;
     if (posix_memalign((void**)&buffer, SECTOR_SIZE, size) == 0) {
         memset(buffer, 0, size);
@@ -280,7 +279,6 @@ void secure_free_buffer(uint8_t* buffer, size_t size) {
         SecureZeroMemory(buffer, size);
         _aligned_free(buffer);
         #else
-        // Bezpečný spôsob vymazania pamäte
         volatile uint8_t *p = buffer;
         for (size_t i = 0; i < size; i++) {
             p[i] = 0;
@@ -290,7 +288,6 @@ void secure_free_buffer(uint8_t* buffer, size_t size) {
     }
 }
 
-// Nova podfunkcia: precita blok dat zo zariadenia
 static ssize_t read_sectors_block(device_context_t *ctx, uint8_t *buffer, size_t max_size, uint64_t currentOffset) {
     size_t bytesToRead = max_size;
     #ifdef _WIN32
@@ -303,7 +300,6 @@ static ssize_t read_sectors_block(device_context_t *ctx, uint8_t *buffer, size_t
     return read_data(ctx, buffer, bytesToRead);
 }
 
-// Nova podfunkcia: spracuje cely blok (cele sektory aj zvisle bajty)
 static void process_block(uint8_t *buffer, ssize_t bytesRead, int encrypt, int key_bits, const uint8_t *key1, const uint8_t *key2, uint64_t sector_offset) {
     size_t completeSectors = bytesRead / SECTOR_SIZE;
     size_t remainderBytes = bytesRead % SECTOR_SIZE;
@@ -329,7 +325,6 @@ static void process_block(uint8_t *buffer, ssize_t bytesRead, int encrypt, int k
     }
 }
 
-// Nova podfunkcia: zapise blok dat na zariadenie
 static ssize_t write_sectors_block(device_context_t *ctx, uint8_t *buffer, size_t bytesToWrite, uint64_t currentOffset) {
     if (!set_position(ctx, currentOffset)) {
         return -1;
@@ -337,7 +332,6 @@ static ssize_t write_sectors_block(device_context_t *ctx, uint8_t *buffer, size_
     return write_data(ctx, buffer, bytesToWrite);
 }
 
-// Refaktorizovana funkcia process_sectors
 int process_sectors(
     device_context_t *ctx,
     uint8_t *key1,
@@ -352,7 +346,6 @@ int process_sectors(
     uint64_t currentOffset, startOffset;
     ssize_t bytesRead, bytesWritten;
     
-    // Inicializacia pre vsetky platformy
     startOffset = start_sector * SECTOR_SIZE;
     currentOffset = startOffset;
     
@@ -380,7 +373,6 @@ int process_sectors(
         if (bytesRead <= 0)
             break;
             
-        // Spracovanie bloku s datami
         process_block(buffer, bytesRead, encrypt, key_bits, key1, key2, sector_num);
         
         size_t completeSectors = bytesRead / SECTOR_SIZE;
@@ -595,7 +587,6 @@ LARGE_INTEGER get_device_size(HANDLE hDevice, device_type_t type) {
     DWORD bytesReturned;
     BOOL success = FALSE;
     
-    // Skúsime získať veľkosť podľa typu zariadenia
     if (type == DEVICE_TYPE_VOLUME) {
         GET_LENGTH_INFORMATION lengthInfo;
         success = DeviceIoControl(hDevice, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0,
