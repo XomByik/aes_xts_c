@@ -7,6 +7,15 @@
  *
  * Autor: Kamil Berecky
  *
+ * Popis: Program implementuje sifrovanie a desifrovanie diskov 
+ * diskovych particii pomocou AES-XTS algoritmu s podporou 128 aj
+ * 256-bitovych klucov. Vyuziva OpenSSL kniznicu pre kryptograficke
+ * operacie a Argon2id na derivaciu kluca z hesla. Podporuje viacero
+ * operacnych systemov (Windows, Linux) a rozne typy diskovych
+ * zariadeni (fyzicke disky, logicke oddiely). Implementacia respektuje
+ * bezpecnostne standardy a vyuziva aj paralelizaciu pomocou kniznice
+ * OpenMP pre zrychlenie sifrovania a desifrovania dat.
+ * 
  * Vyuzite zdroje:
  * - OpenSSL dokumentacia (EVP, HMAC, KDF): 
  *  https://www.openssl.org/docs/man3.0/
@@ -26,16 +35,6 @@
  *  https://sciresol.s3.us-east-2.amazonaws.com/IJST/Articles/2014/Issue-11/Article13.pdf
  * - OpenMP: 
  * https://www.openmp.org/
- *
- * 
- * Popis: Program implementuje sifrovanie a desifrovanie diskov 
- * diskovych particii pomocou AES-XTS algoritmu s podporou 128 aj
- * 256-bitovych klucov. Vyuziva OpenSSL kniznicu pre kryptograficke
- * operacie a Argon2id na derivaciu kluca z hesla. Podporuje viacero
- * operacnych systemov (Windows, Linux) a rozne typy diskovych
- * zariadeni (fyzicke disky, logicke oddiely). Implementacia respektuje
- * bezpecnostne standardy a vyuziva aj paralelizaciu pomocou kniznice
- * OpenMP pre zrychlenie sifrovania a desifrovania dat.
  *
  * Pre viac info pozri README.md
  **********************************************************************/
