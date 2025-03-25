@@ -1,3 +1,4 @@
+#ifndef AES_XTS_H
 #define AES_XTS_H
 
 #include <stdio.h>
@@ -29,11 +30,6 @@
     #include <dirent.h>
 #endif
 
-/* ========== General Constants ========== */
-#ifndef min
-#define min(a,b) (((a) < (b)) ? (a) : (b))
-#endif
-
 /* ========== Return Codes ========== */
 #define AES_XTS_SUCCESS            0
 #define AES_XTS_ERROR_OPENSSL     -1
@@ -51,13 +47,9 @@
 #define RESERVED_SECTORS          64
 
 /* ========== Cryptographic Constants ========== */
-#define SALT_LENGTH               16
-#define TWEAK_LENGTH              16
+#define SALT_SIZE                 16
 #define IV_SIZE                   16
 #define VERIFICATION_DATA_SIZE    32
-#define KEY_SIZE                  32
-#define AES_KEY_LENGTH_128        16
-#define AES_KEY_LENGTH_256        32
 #define BITS_PER_BYTE             8
 #define DEFAULT_KEY_BITS          256
 #define ENCRYPT_MODE              1
@@ -105,7 +97,7 @@ typedef struct {
     uint32_t iterations;
     uint32_t memory_cost;
     uint32_t key_bits;
-    uint8_t salt[SALT_LENGTH];
+    uint8_t salt[SALT_SIZE];
     uint8_t verification_data[32];  
     uint8_t padding[0];  
 } xts_header_t;
@@ -129,12 +121,20 @@ void aes_xts_cleanup(void);
 
 void print_openssl_error(void);
 
+int32_t aes_xts_crypt_sector(
+    const uint8_t *key,     // Jeden spojený kľúč namiesto key1 a key2
+    uint64_t sector_num,
+    uint8_t *data,
+    size_t data_len,
+    int encrypt,
+    int key_bits 
+);
+
 int derive_keys_from_password(
     const uint8_t *password, 
     const uint8_t *salt,
     size_t salt_len,
-    uint8_t *key1, 
-    uint8_t *key2,
+    uint8_t *key,          // Jeden spojený kľúč namiesto key1 a key2
     int key_bits,
     uint32_t iterations,
     uint32_t memory_cost
@@ -151,8 +151,7 @@ void close_device(device_context_t *ctx);
 
 int process_sectors(
     device_context_t *ctx,
-    uint8_t *key1,
-    uint8_t *key2,
+    uint8_t *key,          // Jeden spojený kľúč namiesto key1 a key2
     uint64_t start_sector,
     int encrypt,
     int key_bits  
@@ -201,3 +200,5 @@ bool is_partition_mounted(const char *device_path);
 uint64_t get_partition_size(int fd);
 
 #endif
+
+#endif /* AES_XTS_H */
