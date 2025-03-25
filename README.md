@@ -1,4 +1,4 @@
-# AES-XTS šifrovanie a dešifrovanie súborov s využitím knižnice OpenSSL
+# AES-XTS šifrovanie a dešifrovanie diskov s využitím knižnice OpenSSL
 
 ## Obsah
 1. [Základný prehľad](#základný-prehľad)
@@ -11,22 +11,22 @@
 
 ## Základný prehľad
 
-Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov a diskových oddielov. Je vhodný pre:
-- Zálohovanie citlivých dokumentov
-- Bezpečné šifrovanie diskových oddielov a externých médií
+Tento program slúži na bezpečné šifrovanie a dešifrovanie diskových partícií. Je vhodný pre:
+- Bezpečné šifrovanie diskových partícií a externých médií
 - Ochranu dát pred neoprávneným prístupom
 
 ### Hlavné výhody
 - Využíva moderný šifrovací algoritmus (AES-XTS s podporou 128-bitových a 256-bitových kľúčov)
 - Jednoduchý na použitie
-- Podporuje šifrovanie celých diskových oddielov
+- Podporuje šifrovanie celých diskových partícií
 - Funguje na Windows aj Linux systémoch
+- Využíva paralelné spracovanie pre zvýšenie výkonu
 
 ### Použité technológie
 
 1. **AES-XTS šifrovanie**
    - Využíva 128/256-bitové kľúče pre šifrovanie aj blokové úpravy
-   - Celkový 256/512-bitový kľúč rozdelený na dve 128/256-bitové časti
+   - Celkový 256/512-bitový kľúč pre AES-XTS režim
    - Špeciálne navrhnutý režim pre šifrovanie diskov
    - Odolný voči manipulácii s dátami
    - Veľkosť blokov: 128-bitov
@@ -40,6 +40,12 @@ Tento program slúži na bezpečné šifrovanie a dešifrovanie súborov a disko
    - Generuje 256/512-bitový kľúč
    - Optimalizovaný pre bezpečnosť aj výkon
    - [Podrobnosti o Argon2](https://github.com/P-H-C/phc-winner-argon2)
+
+3. **OpenMP**
+   - Paralelizácia spracovania dát pre zvýšenie výkonu
+   - Efektívne využitie viacjadrových procesorov
+   - Dynamické rozdelenie záťaže medzi dostupné vlákna
+   - [Dokumentácia OpenMP](https://www.openmp.org/)
 
 ## Inštalácia OpenSSL
 
@@ -60,7 +66,8 @@ choco install openssl
 Ubuntu/Debian:
 ```bash
 sudo apt-get update
-sudo apt-get install openssl
+sudo apt-get install openssl libssl-dev
+sudo apt-get install libomp-dev  # Pre OpenMP podporu
 ```
 
 ## Používanie programu
@@ -96,7 +103,7 @@ aes_xts.exe decrypt \\.\E:
 ./aes_xts encrypt /dev/sdb1        # Pre predvolené 256-bitové kľúče
 ```
 
-### Dešifrovanie diskových oddielov
+### Dešifrovanie diskových partícií
 ```bash
 ./aes_xts decrypt /dev/sdb1
 ```
@@ -106,44 +113,45 @@ aes_xts.exe decrypt \\.\E:
 ### Proces šifrovania
 1. Zadanie vstupných parametrov:
    - Veľkosť kľúča (128 alebo 256 bitov)
-   - Cesta k diskovému oddielu
+   - Cesta k diskovej partícii
    - Heslo od používateľa
    
 2. Príprava hlavičky:
    - Vygenerovanie náhodnej 128-bitovej soli cez CSPRNG
    - Vytvorenie verifikačných dát pre kontrolu správnosti hesla
    - Uloženie hlavičky do sektora 62 (za MBR/GPT)
-   - Tento prístup zabezpečuje, že oddiel je možné rozšifrovať na rôznych systémoch
+   - Tento prístup zabezpečuje, že partíciu je možné rozšifrovať na rôznych systémoch (Windows/Linux)
 
 3. Derivácia kľúčov:
    - Z hesla a salt sa pomocou Argon2id vytvorí šifrovací kľúč
-   - Pre AES-128-XTS: 256 bitov (2x 128-bitový kľúč)
-   - Pre AES-256-XTS: 512 bitov (2x 256-bitový kľúč)
-   - Prvá polovica sa použije pre šifrovanie dát
-   - Druhá polovica sa použije pre blokové úpravy
+   - Pre AES-128-XTS: 256 bitov (kombinovaný kľúč)
+   - Pre AES-256-XTS: 512 bitov (kombinovaný kľúč)
+   - Kľúč obsahuje obe časti potrebné pre XTS režim (šifrovanie dát a blokové úpravy)
 
-4. Spracovanie oddielu po sektoroch (4096 bajtov):
+4. Spracovanie partície po sektoroch (4096 bajtov):
    - Pre každý sektor sa vypočíta jedinečná bloková úprava
    - Preskočenie prvých 64 sektorov (rezervované pre MBR/GPT a hlavičku)
    - Šifrovanie dát v sektore pomocou AES-XTS s vypočítanou blokovou úpravou
+   - Paralelné spracovanie blokov dát pomocou OpenMP pre zvýšenie výkonu
 
 ### Proces dešifrovania
 1. Zadanie parametrov:
    - Heslo od používateľa
-   - Cesta k zašifrovanému oddielu
+   - Cesta k zašifrovanej partícii
 
 2. Čítanie hlavičky:
    - Načítanie hlavičky zo sektora 62
    - Extrakcia soli, veľkosti kľúča a ďalších parametrov
 
-3. Derivácia rovnakých kľúčov:
+3. Derivácia kľúča:
    - Použitie rovnakého hesla a načítaného salt
-   - Vytvorenie rovnakých kľúčov ako pri šifrovaní
+   - Vytvorenie rovnakého kľúča ako pri šifrovaní
    - Overenie správnosti hesla pomocou verifikačných dát
 
-4. Spracovanie oddielu po sektoroch:
+4. Spracovanie partície po sektoroch:
    - Výpočet blokovej úpravy pre každý sektor rovnakým spôsobom
    - Dešifrovanie dát pomocou AES-XTS s patričnou blokovou úpravou
+   - Paralelné spracovanie blokov pomocou OpenMP
 
 ### Režim XTS a využitie blokových úprav
 - XTS (XEX-based tweaked-codebook mode with ciphertext stealing) je špecializovaný
@@ -162,6 +170,9 @@ aes_xts.exe decrypt \\.\E:
 - Bloková úprava pre sektor:
   - Kombinácia počiatočného IV a čísla sektora
   - Zabezpečuje unikátnosť šifrovania pre každý sektor
+- Paralelné spracovanie:
+  - Využitie OpenMP na paralelizáciu spracovania blokov
+  - Dynamické priradenie sektorov jednotlivým vláknam pre optimálny výkon
 
 ## Technická dokumentácia
 
@@ -169,12 +180,18 @@ aes_xts.exe decrypt \\.\E:
 
 #### aes_xts_crypt_sector
 ```c
-int32_t aes_xts_crypt_sector(const uint8_t *key1, const uint8_t *key2, uint64_t sector_num, uint8_t *data, size_t data_len, int encrypt, int key_bits)
+int32_t aes_xts_crypt_sector(
+    const uint8_t *key,     // Jeden spojený kľúč
+    uint64_t sector_num,
+    uint8_t *data,
+    size_t data_len,
+    int encrypt,
+    int key_bits 
+)
 ```
 - **Účel**: Vykonáva šifrovanie alebo dešifrovanie jedného sektora pomocou AES-XTS
 - **Parametre**:
-  - key1: prvá časť kľúča (pre šifrovanie dát)
-  - key2: druhá časť kľúča (pre blokové úpravy)
+  - key: spojený kľúč (obsahuje obe časti pre XTS režim)
   - sector_num: číslo sektora
   - data: dáta na šifrovanie/dešifrovanie
   - data_len: veľkosť dát
@@ -188,15 +205,22 @@ int32_t aes_xts_crypt_sector(const uint8_t *key1, const uint8_t *key2, uint64_t 
 
 #### derive_keys_from_password
 ```c
-int derive_keys_from_password(const char *password, const unsigned char *salt, size_t salt_len, unsigned char *key1, unsigned char *key2, int key_bits, uint32_t iterations, uint32_t memory_cost)
+int derive_keys_from_password(
+    const uint8_t *password, 
+    const uint8_t *salt,
+    size_t salt_len,
+    uint8_t *key,          // Jeden spojený kľúč
+    int key_bits,
+    uint32_t iterations,
+    uint32_t memory_cost
+)
 ```
-- **Účel**: Generuje šifrovacie kľúče z hesla pomocou Argon2id
+- **Účel**: Generuje šifrovací kľúč z hesla pomocou Argon2id
 - **Parametre**:
   - password: používateľské heslo
   - salt: salt pre deriváciu kľúča
   - salt_len: dĺžka salt
-  - key1: buffer pre prvú časť kľúča
-  - key2: buffer pre druhú časť kľúča
+  - key: buffer pre výsledný spojený kľúč
   - key_bits: veľkosť kľúča v bitoch (128 alebo 256)
   - iterations: počet iterácií Argon2 algoritmu
   - memory_cost: pamäťová náročnosť Argon2 algoritmu
@@ -204,18 +228,23 @@ int derive_keys_from_password(const char *password, const unsigned char *salt, s
   1. Inicializuje Argon2id KDF v OpenSSL
   2. Nastaví parametre pre deriváciu (iterácie, pamäť, paralelizmus)
   3. Vytvorí kľúč z hesla a salt
-  4. Rozdelí výsledok na dve časti (key1 a key2)
+  4. Výsledok obsahuje celý spojený kľúč potrebný pre XTS režim
   5. Vráti výsledok operácie
 
 #### process_sectors
 ```c
-int process_sectors(device_context_t *ctx, uint8_t *key1, uint8_t *key2, uint64_t start_sector, int encrypt, int key_bits)
+int process_sectors(
+    device_context_t *ctx,
+    uint8_t *key,          // Jeden spojený kľúč
+    uint64_t start_sector,
+    int encrypt,
+    int key_bits  
+)
 ```
 - **Účel**: Spracováva sektory zariadenia (šifrovanie/dešifrovanie)
 - **Parametre**:
   - ctx: kontext zariadenia
-  - key1: prvá časť kľúča
-  - key2: druhá časť kľúča
+  - key: spojený kľúč pre XTS režim
   - start_sector: prvý sektor na spracovanie
   - encrypt: 1 pre šifrovanie, 0 pre dešifrovanie
   - key_bits: veľkosť kľúča v bitoch
@@ -223,27 +252,26 @@ int process_sectors(device_context_t *ctx, uint8_t *key1, uint8_t *key2, uint64_
   1. Alokuje buffer pre efektívne spracovanie (8MB)
   2. Nastaví pozíciu na začiatočný sektor
   3. Číta dáta zo zariadenia po blokoch
-  4. Pre každý sektor v bloku:
-     - Volá aes_xts_encrypt_sector alebo aes_xts_decrypt_sector
+  4. Paralelne spracováva sektory v bloku pomocou OpenMP
   5. Zapisuje spracované dáta späť na zariadenie
   6. Zobrazuje priebeh operácie
   7. Vyčistí a uvoľní použité prostriedky
 
-#### write_header / read_header
+#### header_io
 ```c
-int write_header(device_context_t *ctx, const xts_header_t *header)
-int read_header(device_context_t *ctx, xts_header_t *header)
+int header_io(device_context_t *ctx, xts_header_t *header, int isWrite)
 ```
-- **Účel**: Zapisuje a číta hlavičku šifrovania z odddielu
+- **Účel**: Zapisuje a číta hlavičku šifrovania z partície
 - **Parametre**:
   - ctx: kontext zariadenia
   - header: štruktúra s hlavičkou
+  - isWrite: 1 pre zápis, 0 pre čítanie
 - **Proces**:
   1. Alokuje buffer pre sektor
-  2. write_header:
+  2. Pre zápis:
      - Inicializuje sektor s hlavičkou
      - Zapisuje na pozíciu HEADER_SECTOR
-  3. read_header:
+  3. Pre čítanie:
      - Číta sektor z pozície HEADER_SECTOR
      - Overí magic hodnotu "AESXTS"
      - Naplní štruktúru s hlavičkou
@@ -255,7 +283,7 @@ void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *s
 ```
 - **Účel**: Vytvára verifikačné dáta pre overenie správnosti hesla
 - **Parametre**:
-  - key: šifrovací kľúč
+  - key: šifrovací kľúč (prvá polovica spojeného kľúča)
   - key_bits: veľkosť kľúča v bitoch
   - salt: salt použitý pri derivácii kľúča
   - verification_data: výstupný buffer pre verifikačné dáta
@@ -265,7 +293,25 @@ void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *s
   3. Vygeneruje 32 bajtov verifikačných dát
   4. Vyčistí a uvoľní OpenSSL kontext
 
-### Formát hlavičky šifrovaného oddielu
+### Paralelizácia pomocou OpenMP
+
+Program využíva OpenMP pre paralelné spracovanie blokov dát:
+
+```c
+#pragma omp parallel for schedule(dynamic, 32)
+for (size_t i = 0; i < num_sectors; i++) {
+    // Spracovanie jednotlivých sektorov
+    aes_xts_crypt_sector(key, current_sector + i, sector_data, sector_size, encrypt, key_bits);
+}
+```
+
+- **Výhody paralelizácie**:
+  - Výrazné zrýchlenie na viacjadrových procesoroch
+  - Efektívne využitie dostupných výpočtových zdrojov
+  - Dynamické rozdelenie práce medzi vlákna
+  - Škálovateľný výkon podľa dostupných CPU jadier
+
+### Formát hlavičky šifrovanej partície
 ```
 +---------------+------------------+------------------+-----------------+
 | Magic (6B)    | Version (1B)     | Enc Type (1B)    | Start Sector    |
@@ -304,7 +350,7 @@ void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *s
 
 2. **Kryptografická bezpečnosť**
    - 128/256-bitová bezpečnostná úroveň
-   - Jedinečný salt pre každý oddiel
+   - Jedinečný salt pre každý partíciu
    - Jedinečná bloková úprava pre každý sektor
    - Bezpečné mazanie pamäte po použití
 
