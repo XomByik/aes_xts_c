@@ -163,14 +163,14 @@ void read_password(uint8_t *password, size_t max_len, const char *prompt) {
     tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
     #endif
     
-    while (i < max_len - 1) {
+    while (i < max_len - 1 && (c = 
         #ifdef _WIN32
-        c = _getch();
+        _getch()
         #else
-        c = getchar();
+        getchar()
         #endif
-        
-        if (c == '\r' || c == '\n' || c == EOF) 
+    ) != EOF) {
+        if (c == '\r' || c == '\n') 
             break;
         else if ((c == '\b' || c == 127) && i > 0) {
             i--;
@@ -255,15 +255,20 @@ uint8_t* allocate_aligned_buffer(size_t size) {
     return buffer;
 }
 
-void secure_free_buffer(uint8_t* buffer, size_t size) {
+
+void secure_clear_memory(void *buffer, size_t size, bool free_memory) {
     if (buffer) {
-        #ifdef _WIN32
-        SecureZeroMemory(buffer, size);
-        _aligned_free(buffer);
-        #else
-        memset(buffer, 0, size);
-        free(buffer);
-        #endif
+        // Použiť OpenSSL funkciu na bezpečné vymazanie pamäte
+        // Táto funkcia je optimalizovaná a odolná voči optimalizáciám kompilátora
+        OPENSSL_cleanse(buffer, size);
+        
+        if (free_memory) {
+            #ifdef _WIN32
+            _aligned_free(buffer);
+            #else
+            free(buffer);
+            #endif
+        }
     }
 }
 
@@ -340,7 +345,7 @@ int process_sectors(
     }
     
     if (!set_position(ctx, startOffset)) {
-        secure_free_buffer(buffer, buffer_size);
+        secure_clear_memory(buffer, buffer_size,true);
         return AES_XTS_ERROR_IO;
     }
     
@@ -356,7 +361,7 @@ int process_sectors(
         ssize_t bytesRead = read_sectors_block(ctx, buffer, buffer_size, currentOffset);
         if (bytesRead <= 0) {
             if (bytesRead < 0) {
-                secure_free_buffer(buffer, buffer_size);
+                secure_clear_memory(buffer, buffer_size,true);
                 return AES_XTS_ERROR_IO;
             }
             break; 
@@ -366,7 +371,7 @@ int process_sectors(
         
         ssize_t bytesWritten = write_sectors_block(ctx, buffer, bytesRead, currentOffset);
         if (bytesWritten != bytesRead) {
-            secure_free_buffer(buffer, buffer_size);
+            secure_clear_memory(buffer, buffer_size,true);
             return AES_XTS_ERROR_IO;
         }
         
@@ -378,7 +383,7 @@ int process_sectors(
     }
     
     printf("\n");
-    secure_free_buffer(buffer, buffer_size);
+    secure_clear_memory(buffer, buffer_size,true);
     return AES_XTS_SUCCESS;
 }
 
@@ -426,7 +431,7 @@ int header_io(device_context_t *ctx, xts_header_t *header, int isWrite) {
     }
     
 cleanup:
-    secure_free_buffer(sector, SECTOR_SIZE);
+    secure_clear_memory(sector, SECTOR_SIZE,true);
     return result;
 }
 
@@ -668,11 +673,8 @@ bool is_partition_mounted(const char *device_path) {
     char line[ERROR_BUFFER_SIZE];
     bool mounted = false;
 
-    while (fgets(line, sizeof(line), mtab)) {
-        if (strstr(line, device_path)) {
-            mounted = true;
-            break;
-        }
+    while (fgets(line, sizeof(line), mtab) && !mounted) {
+        mounted = strstr(line, device_path) != NULL;
     }
 
     fclose(mtab);
@@ -700,14 +702,15 @@ bool parse_arguments(int argc, char *argv[], const char **operation,
         printf("  %s encrypt [128|256] <zariadenie>\n", argv[0]);
         printf("  %s decrypt [128|256] <zariadenie>\n", argv[0]);
         printf("\nPriklady:\n");
-        printf("  %s encrypt 128 /dev/sdb1     # Sifrovanie s 128-bitovym klucom\n", argv[0]);
-        printf("  %s encrypt 256 /dev/sdb1     # Sifrovanie s 256-bitovym klucom\n", argv[0]);
-        printf("  %s encrypt /dev/sdb1         # Sifrovanie s predvolenou velkostou kluca (256-bit)\n", argv[0]);
-        printf("  %s decrypt /dev/sdb1         # Desifrovanie (velkost kluca je nacitana z hlavicky)\n", argv[0]);
+        printf("  %s encrypt 128 /dev/sdb1   # 128-bitovy kluc\n", argv[0]);
+        printf("  %s encrypt 256 /dev/sdb1   # 256-bitovy kluc\n", argv[0]);
+        printf("  %s encrypt /dev/sdb1       # Predvoleny 256-bitovy kluc\n", argv[0]);
+        printf("  %s decrypt /dev/sdb1       # Kluc z hlavicky\n", argv[0]);
         return false;
     }
 
     *operation = argv[1];
+    *device_path = NULL;
     
     if (argc >= 4 && (strcmp(argv[2], "128") == 0 || strcmp(argv[2], "256") == 0)) {
         *key_bits = atoi(argv[2]);
@@ -732,11 +735,8 @@ int encrypt_device(device_context_t *ctx, const char *device_path, int key_bits)
     
     printf("Pouziva sa %d-bitove sifrovanie\n", key_bits);
     
-    if (!process_user_confirmation(device_path, key_bits)) {
-        return 0;
-    }
-    
-    if (!process_password_input(password, sizeof(password), 1)) {
+    if (!process_user_confirmation(device_path, key_bits) ||
+        !process_password_input(password, sizeof(password), 1)) {
         return 0;
     }
 
@@ -754,27 +754,31 @@ int encrypt_device(device_context_t *ctx, const char *device_path, int key_bits)
         return 0;
     }
 
-    // Derivácia kľúčov z hesla
     if (derive_keys_from_password(password, header.salt, SALT_LENGTH,
                                 key1, key2, key_bits,
                                 header.iterations, header.memory_cost) != AES_XTS_SUCCESS) {
+        secure_clear_memory(password, sizeof(password), false);
+        secure_clear_memory(key1, sizeof(key1), false);
+        secure_clear_memory(key2, sizeof(key2), false);
         return 0;
     }
     
+    // Najprv vytvoríme verifikačné dáta
     create_verification_data(key1, key_bits, header.salt, header.verification_data);
-
-    // Zápis hlavičky
+    
+    // Až potom zapíšeme hlavičku
     if (header_io(ctx, &header, 1) != AES_XTS_SUCCESS) {
+        secure_clear_memory(password, sizeof(password), false);
+        secure_clear_memory(key1, sizeof(key1), false);
+        secure_clear_memory(key2, sizeof(key2), false);
         return 0;
     }
-
-    // Šifrovanie sektorov
+    
     result = process_sectors(ctx, key1, key2, header.start_sector, ENCRYPT_MODE, key_bits);
     
-    // Bezpečné vyčistenie pamäte
-    memset(password, 0, sizeof(password));
-    memset(key1, 0, sizeof(key1));
-    memset(key2, 0, sizeof(key2));
+    secure_clear_memory(password, sizeof(password), false);
+    secure_clear_memory(key1, sizeof(key1), false);
+    secure_clear_memory(key2, sizeof(key2), false);
     
     return result;
 }
@@ -786,7 +790,7 @@ int decrypt_device(device_context_t *ctx) {
     int result = 0;
     
     if (header_io(ctx, &header, 0) != AES_XTS_SUCCESS) {
-        fprintf(stderr, "Zlyhalo nacitanie hlavicky alebo neplatna hlavicka\n");
+        fprintf(stderr, "Neplatna alebo poskodena hlavicka\n");
         return 0;
     }
     
@@ -794,7 +798,7 @@ int decrypt_device(device_context_t *ctx) {
         return 0;
     }
 
-    printf("Pouziva sa %d-bitove sifrovanie (z hlavicky)\n", header.key_bits);
+    printf("Pouziva sa %d-bitove sifrovanie\n", header.key_bits);
 
     if (derive_keys_from_password(password, header.salt, SALT_LENGTH,
                                 key1, key2, header.key_bits, 
@@ -807,21 +811,17 @@ int decrypt_device(device_context_t *ctx) {
 
     if (memcmp(verification_check, header.verification_data, VERIFICATION_DATA_SIZE) != 0) {
         fprintf(stderr, "Chyba: Neplatne heslo alebo poskodene data\n");
-        
-        memset(password, 0, sizeof(password));
-        memset(key1, 0, sizeof(key1));
-        memset(key2, 0, sizeof(key2));
-        
+        secure_clear_memory(password, sizeof(password), false);
+        secure_clear_memory(key1, sizeof(key1), false);
+        secure_clear_memory(key2, sizeof(key2), false);
         return AES_XTS_ERROR_WRONG_PWD;
     }
 
-    printf("Overenie hesla uspesne\n");
-    
     result = process_sectors(ctx, key1, key2, header.start_sector, DECRYPT_MODE, header.key_bits);
     
-    memset(password, 0, sizeof(password));
-    memset(key1, 0, sizeof(key1));
-    memset(key2, 0, sizeof(key2));
+    secure_clear_memory(password, sizeof(password), false);
+    secure_clear_memory(key1, sizeof(key1), false);
+    secure_clear_memory(key2, sizeof(key2), false);
     
     return result;
 }
@@ -839,7 +839,6 @@ int main(int argc, char *argv[]) {
     aes_xts_init();
     
     device_context_t ctx = {0};
-    
     if (!open_device(device_path, &ctx)) {
         fprintf(stderr, "Chyba: Nepodarilo sa otvorit zariadenie %s\n", device_path);
         aes_xts_cleanup();
@@ -848,11 +847,9 @@ int main(int argc, char *argv[]) {
     
     if (strcmp(operation, "encrypt") == 0) {
         result = encrypt_device(&ctx, device_path, key_bits);
-    }
-    else if (strcmp(operation, "decrypt") == 0) {
+    } else if (strcmp(operation, "decrypt") == 0) {
         result = decrypt_device(&ctx);
-    }
-    else {
+    } else {
         fprintf(stderr, "Neznamy prikaz: %s\n", operation);
         result = AES_XTS_ERROR_PARAM;
     }
@@ -861,15 +858,13 @@ int main(int argc, char *argv[]) {
     aes_xts_cleanup();
     
     if (result == AES_XTS_SUCCESS) {
-        printf("\nOperacia uspesne dokoncena.\n");
+        printf("Operacia uspesne dokoncena.\n");
         return EXIT_SUCCESS;
-    }
-    else if (result == 0) {
-        printf("\nOperacia zrusena pouzivatelom.\n");
+    } else if (result == 0) {
+        printf("Operacia zrusena pouzivatelom.\n");
         return EXIT_SUCCESS;
-    }
-    else {
-        fprintf(stderr, "\nOperacia zlyhala s chybovym kodom %d.\n", result);
+    } else {
+        fprintf(stderr, "Operacia zlyhala s chybovym kodom %d.\n", result);
         return EXIT_FAILURE;
     }
 }

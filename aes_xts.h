@@ -8,6 +8,7 @@
 #include <openssl/rand.h>
 #include <openssl/err.h>
 #include <openssl/kdf.h>
+#include <openssl/crypto.h>
 #include <ctype.h>
 #include <stdbool.h>
 #include <omp.h>
@@ -161,7 +162,7 @@ void create_verification_data(const uint8_t *key, int key_bits, const uint8_t *s
 
 uint8_t* allocate_aligned_buffer(size_t size);
 
-void secure_free_buffer(uint8_t* buffer, size_t size);
+void secure_clear_memory(void *buffer, size_t size, bool free_memory);
 
 int header_io_operation(device_context_t *ctx, xts_header_t *header, int write_operation);
 
