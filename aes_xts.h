@@ -164,7 +164,7 @@ uint8_t* allocate_aligned_buffer(size_t size);
 
 void secure_clear_memory(void *buffer, size_t size, bool free_memory);
 
-int header_io_operation(device_context_t *ctx, xts_header_t *header, int write_operation);
+int header_io(device_context_t *ctx, xts_header_t *header, int isWrite); 
 
 void report_error(const char *message, int error_code);
 
