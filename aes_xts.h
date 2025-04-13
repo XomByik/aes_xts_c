@@ -355,5 +355,3 @@ uint64_t get_partition_size(int fd);
 #endif
 
 #endif /* AES_XTS_H */
-
-#endif 

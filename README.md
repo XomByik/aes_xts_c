@@ -67,7 +67,6 @@ Ubuntu/Debian:
 ```bash
 sudo apt-get update
 sudo apt-get install openssl libssl-dev
-sudo apt-get install libomp-dev  # Pre OpenMP podporu
 ```
 
 ## Používanie programu

@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -fopenmp
+CFLAGS = -g -Wall -Wextra -O2 -fopenmp
 LDFLAGS = -lcrypto -lssl -fopenmp
 
 ifeq ($(OS),Windows_NT)
