@@ -1693,10 +1693,10 @@ bool parse_arguments(int argc, char *argv[], const char **operation,
         printf("  %s encrypt [128|256] <zariadenie>\n", argv[0]);
         printf("  %s decrypt [128|256] <zariadenie>\n", argv[0]);
         printf("\nPriklady:\n");
-        printf("  %s encrypt 128 /dev/sdb1   # 128-bitovy kluc\n", argv[0]);
-        printf("  %s encrypt 256 /dev/sdb1   # 256-bitovy kluc\n", argv[0]);
-        printf("  %s encrypt /dev/sdb1       # Predvoleny 256-bitovy kluc\n", argv[0]);
-        printf("  %s decrypt /dev/sdb1       # Kluc z hlavicky\n", argv[0]);
+        printf("  %s encrypt 128 /dev/sdb1   # Vyuzitie 128-bitoveho kluca na sifrovanie\n", argv[0]);
+        printf("  %s encrypt 256 /dev/sdb1   # Vyuzitie 256-bitoveho kluca na sifrovanie\n", argv[0]);
+        printf("  %s encrypt /dev/sdb1       # Bez argumentu sa pouzije 256-bitovy kluc\n", argv[0]);
+        printf("  %s decrypt /dev/sdb1       # Pri desifrovani sa dlzka kluca nacita z hlavicky\n", argv[0]);
         return false;
     }
 
